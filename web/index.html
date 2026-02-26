@@ -11,39 +11,40 @@
 
 <body>
     <div class="sidebar">
-        <div class="logo">GoPass <span style="font-size:12px;opacity:0.6;font-weight:normal">v1.0.8</span></div>
+        <div class="logo">GoPass <span style="font-size:12px;opacity:0.6;font-weight:normal">v1.0.9</span></div>
         <nav>
             <a href="#" class="active" id="nav-dashboard">Dashboard</a>
             <a href="#" id="nav-rules">Rules</a>
             <a href="#" id="nav-settings">Settings</a>
         </nav>
     </div>
+
     <div class="main-content">
-        <header>
-            <h1>Overview</h1>
-            <div style="display:flex; gap: 15px; align-items:center;">
-                <div class="pid-badge">PID: <span id="sys-pid">--</span></div>
-                <div class="status-indicator">
-                    <span id="engine-status" class="status-dot green"></span> Running
+        <div id="view-dashboard">
+            <header>
+                <h1>Dashboard</h1>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-label">Status</div>
+                        <div class="stat-value" id="status" style="color: var(--accent)">Running</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Active Connections</div>
+                        <div class="stat-value" id="active-conns">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Download</div>
+                        <div class="stat-value" id="rx-bytes">0 B</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Upload</div>
+                        <div class="stat-value" id="tx-bytes">0 B</div>
+                    </div>
                 </div>
-            </div>
-        </header>
+            </header>
 
-        <!-- Dashboard View -->
-        <div id="view-dashboard" class="app-view">
-            <div class="panels">
-                <div class="panel glass">
-                    <h3>Active Connections</h3>
-                    <h2 id="conn-count">0</h2>
-                </div>
-                <div class="panel glass">
-                    <h3>Total Traffic</h3>
-                    <h2><span id="rx">0</span> ↓ / <span id="tx">0</span> ↑</h2>
-                </div>
-            </div>
-
-            <div class="connections-view glass">
-                <h3>Proxied Connections (Whitelisted/Global)</h3>
+            <section class="card">
+                <h2>Proxied Connections (Top 50)</h2>
                 <table>
                     <thead>
                         <tr>
@@ -54,13 +55,16 @@
                         </tr>
                     </thead>
                     <tbody id="conn-list-proxy">
-                        <!-- Proxied connections -->
+                        <!-- Proxied connections will be injected here -->
                     </tbody>
                 </table>
-            </div>
+            </section>
 
-            <div class="connections-view glass" style="margin-top: 20px;">
-                <h3>Direct Connections (Bypassed)</h3>
+            <section class="card" style="margin-top: 24px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                    <h2 style="margin: 0;">Direct Connections (Top 50)</h2>
+                    <span style="font-size: 12px; color: var(--text-secondary);">Real-time bypass monitor</span>
+                </div>
                 <table>
                     <thead>
                         <tr>
@@ -71,10 +75,27 @@
                         </tr>
                     </thead>
                     <tbody id="conn-list-direct">
-                        <!-- Direct connections -->
+                        <!-- Direct connections will be injected here -->
                     </tbody>
                 </table>
-            </div>
+            </section>
+
+            <!-- Troubleshooting Section -->
+            <section class="card"
+                style="margin-top: 24px; border-left: 4px solid var(--accent); background: rgba(58, 134, 255, 0.05);">
+                <h2 style="font-size: 16px; margin-bottom: 8px;">💡 Troubleshooting / 常见问题排查</h2>
+                <ul style="font-size: 13px; color: var(--text-secondary); line-height: 1.6; padding-left: 20px;">
+                    <li><strong>YouTube/Google 无法访问？</strong>
+                        <br>请在浏览器设置中开启 <b>"使用安全 DNS" (DoH)</b> 并选择 Google 或 Cloudflare。这能有效解决 DNS 污染问题。
+                    </li>
+                    <li><strong>什么是 Direct 列表？</strong>
+                        <br>这里显示的程序目前绕过了代理直连上网。如果你发现某个程序需要代理，点击右侧的 <b>Add to Rules</b> 即可。
+                    </li>
+                    <li><strong>v1.0.9 更新：</strong>
+                        <br>已加入 QUIC (UDP 443) 强制回退补丁，大幅提升 YouTube 兼容性。
+                    </li>
+                </ul>
+            </section>
         </div>
 
         <!-- Rules View -->

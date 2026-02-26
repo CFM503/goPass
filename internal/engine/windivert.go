@@ -219,7 +219,13 @@ func NewInterceptor(mode string, whitelist []string, tracker *ConnTracker, proxy
 // buildFilter 动态构建 WinDivert 过滤字符串
 // 仅拦截出站 TCP，排除 127.0.0.1 (具体进程在 handlePacket 中根据 PID 过滤)
 func (i *Interceptor) buildFilter() string {
-	filter := fmt.Sprintf("(outbound and ip and tcp and ip.DstAddr != 127.0.0.1) or (outbound and ip and tcp and tcp.SrcPort == %d)", TProxyPort)
+	// 拦截：
+	// 1. 出站 TCP (准备劫持)
+	// 2. 出站 UDP 443 (YouTube/QUIC, 准备静默丢弃以纠正浏览器回退 TCP)
+	// 3. TProxy 返回的 TCP 包 (反向 NAT)
+	filter := fmt.Sprintf("(outbound and ip and tcp and ip.DstAddr != 127.0.0.1) or "+
+		"(outbound and ip and udp and udp.DstPort == 443) or "+
+		"(outbound and ip and tcp and tcp.SrcPort == %d)", TProxyPort)
 
 	if i.proxyIP != "" && i.proxyIP != "127.0.0.1" {
 		filter += fmt.Sprintf(" and ip.DstAddr != %s", i.proxyIP)
@@ -349,6 +355,17 @@ func (i *Interceptor) handlePacket(pkt []byte, addr *winDivertAddress) {
 	origDstPort := binary.BigEndian.Uint16(pkt[tcpOffset+2 : tcpOffset+4])
 	origDstIPStr := origDstIP.String()
 	srcIP := net.IP(pkt[12:16]).String()
+
+	// 特殊处理：如果是 UDP 443 (QUIC)，直接丢弃 (不发回也不处理)
+	// 这样浏览器会因为 UDP 不通而自动降级到 TCP (HTTPS)，从而被我们下方的逻辑代理
+	isUDP := pkt[9] == 17 // UDP Protocol Number
+	if isUDP {
+		dstPort := binary.BigEndian.Uint16(pkt[ipHeaderLen+2 : ipHeaderLen+4])
+		if dstPort == 443 {
+			// 静默丢弃
+			return
+		}
+	}
 
 	// 先判断是否为 TProxy 发回的数据包（反向 NAT）
 	if srcPort == TProxyPort {
