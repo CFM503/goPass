@@ -61,7 +61,7 @@ func (ws *WSServer) HandleWS(w http.ResponseWriter, r *http.Request) {
 }
 
 func (ws *WSServer) broadcastLoop() {
-	ticker := time.NewTicker(2 * time.Second)
+	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
 	var lastRx, lastTx int64
