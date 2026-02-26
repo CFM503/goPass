@@ -3,7 +3,9 @@ package process
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -14,7 +16,50 @@ var (
 	procCreateToolhelp32Snapshot = kernel32.NewProc("CreateToolhelp32Snapshot")
 	procProcess32FirstW          = kernel32.NewProc("Process32FirstW")
 	procProcess32NextW           = kernel32.NewProc("Process32NextW")
+
+	nameCache = make(map[uint32]string)
+	cacheMu   sync.RWMutex
 )
+
+func init() {
+	// 启动后台刷新协程，每 10 秒完全同步一次进程表
+	go func() {
+		for {
+			refreshCache()
+			time.Sleep(10 * time.Second)
+		}
+	}()
+}
+
+func refreshCache() {
+	snapshot, _, _ := procCreateToolhelp32Snapshot.Call(TH32CS_SNAPPROCESS, 0)
+	handle := windows.Handle(snapshot)
+	if handle == windows.InvalidHandle {
+		return
+	}
+	defer windows.CloseHandle(handle)
+
+	var entry PROCESSENTRY32
+	entry.Size = uint32(unsafe.Sizeof(entry))
+
+	ret, _, _ := procProcess32FirstW.Call(uintptr(handle), uintptr(unsafe.Pointer(&entry)))
+	if ret == 0 {
+		return
+	}
+
+	newCache := make(map[uint32]string)
+	for {
+		newCache[entry.Th32ProcessID] = syscall.UTF16ToString(entry.SzExeFile[:])
+		ret, _, _ = procProcess32NextW.Call(uintptr(handle), uintptr(unsafe.Pointer(&entry)))
+		if ret == 0 {
+			break
+		}
+	}
+
+	cacheMu.Lock()
+	nameCache = newCache
+	cacheMu.Unlock()
+}
 
 const (
 	TH32CS_SNAPPROCESS = 0x00000002
@@ -68,31 +113,13 @@ func GetPIDsByName(processName string) ([]uint32, error) {
 	return pids, nil
 }
 
-// GetNameByPID 返回给定 PID 的进程名
+// GetNameByPID 返回给定 PID 的进程名（优先从缓存读取，大幅节约 CPU）
 func GetNameByPID(pid uint32) string {
-	snapshot, _, _ := procCreateToolhelp32Snapshot.Call(TH32CS_SNAPPROCESS, 0)
-	handle := windows.Handle(snapshot)
-	if handle == windows.InvalidHandle {
-		return "unknown"
-	}
-	defer windows.CloseHandle(handle)
-
-	var entry PROCESSENTRY32
-	entry.Size = uint32(unsafe.Sizeof(entry))
-
-	ret, _, _ := procProcess32FirstW.Call(uintptr(handle), uintptr(unsafe.Pointer(&entry)))
-	if ret == 0 {
-		return "unknown"
-	}
-
-	for {
-		if entry.Th32ProcessID == pid {
-			return syscall.UTF16ToString(entry.SzExeFile[:])
-		}
-		ret, _, _ = procProcess32NextW.Call(uintptr(handle), uintptr(unsafe.Pointer(&entry)))
-		if ret == 0 {
-			break
-		}
+	cacheMu.RLock()
+	name, ok := nameCache[pid]
+	cacheMu.RUnlock()
+	if ok {
+		return name
 	}
 	return "unknown"
 }

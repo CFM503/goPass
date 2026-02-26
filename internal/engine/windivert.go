@@ -265,6 +265,7 @@ func (i *Interceptor) Start() {
 			case <-i.stopCh:
 				return
 			default:
+				time.Sleep(50 * time.Millisecond)
 				continue
 			}
 		}

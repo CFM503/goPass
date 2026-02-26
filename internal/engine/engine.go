@@ -30,11 +30,11 @@ type Stats struct {
 	Active      []map[string]interface{}
 	mu          sync.Mutex
 
-	// 记录直连程序：ID -> {Process, Target, LastSeen}
+	// 记录直连程序：ID -> {Process, Target, LastSeen, LastReported}
 	directItems map[string]map[string]interface{}
 }
 
-// ReportDirect 上报直连连接
+// ReportDirect 上报直连连接 (增加频率限制，每 5 秒针对同一个 ID 仅处理一次)
 func (s *Stats) ReportDirect(id, process, target, host string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -43,13 +43,24 @@ func (s *Stats) ReportDirect(id, process, target, host string) {
 		s.directItems = make(map[string]map[string]interface{})
 	}
 
+	now := time.Now()
+	// 频率限制：如果该连接在 5 秒内报送过，则跳过锁竞争激烈的后续逻辑
+	if item, ok := s.directItems[id]; ok {
+		lastReported, _ := item["lastSeen"].(time.Time)
+		if now.Sub(lastReported) < 5*time.Second {
+			// 仅更新最后可见时间，不产生新的渲染负担
+			item["lastSeen"] = now
+			return
+		}
+	}
+
 	s.directItems[id] = map[string]interface{}{
 		"id":       id,
 		"process":  process,
 		"target":   target,
 		"host":     host,
 		"policy":   "DIRECT",
-		"lastSeen": time.Now(),
+		"lastSeen": now,
 	}
 }
 
