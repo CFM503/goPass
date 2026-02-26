@@ -1,5 +1,6 @@
 document.addEventListener('DOMContentLoaded', () => {
     connectWS();
+    loadRules(); // Load rules initially for deduplication check
 });
 
 function connectWS() {
@@ -37,20 +38,59 @@ function connectWS() {
 }
 
 function renderConnections(conns) {
-    const tbody = document.getElementById('conn-list');
-    tbody.innerHTML = '';
+    const proxyBody = document.getElementById('conn-list-proxy');
+    const directBody = document.getElementById('conn-list-direct');
+    
+    proxyBody.innerHTML = '';
+    directBody.innerHTML = '';
 
     conns.forEach(c => {
         const tr = document.createElement('tr');
-        tr.innerHTML = `
-            <td>${c.process}</td>
-            <td>${c.target}</td>
-            <td>${c.host}</td>
-            <td><span style="color: var(--accent)">${c.policy}</span></td>
-        `;
-        tbody.appendChild(tr);
+        if (c.policy === 'PROXY') {
+            tr.innerHTML = `
+                <td>${c.process}</td>
+                <td>${c.target}</td>
+                <td>${c.host}</td>
+                <td><span style="color: var(--accent)">${c.policy}</span></td>
+            `;
+            proxyBody.appendChild(tr);
+        } else {
+            const isAlreadyWhitelisted = currentRules.some(r => r.payload === c.process);
+            const buttonHtml = isAlreadyWhitelisted 
+                ? `<span style="color:var(--text-secondary); font-size:12px;">Already in Whitelist</span>`
+                : `<button onclick="quickAddRule('${c.process}')" style="padding:4px 8px; background:var(--accent); border:none; color:white; border-radius:4px; cursor:pointer; font-size:12px;">Add to Rules</button>`;
+
+            tr.innerHTML = `
+                <td>${c.process}</td>
+                <td>${c.target}</td>
+                <td>${c.host}</td>
+                <td>${buttonHtml}</td>
+            `;
+            directBody.appendChild(tr);
+        }
     });
 }
+
+window.quickAddRule = function(processName) {
+    if (processName === 'unknown' || !processName) {
+        alert("Cannot add unknown process.");
+        return;
+    }
+
+    if (currentRules.some(r => r.payload === processName)) {
+        alert("The program is already in the whitelist!");
+        return;
+    }
+
+    currentRules.push({
+        type: 'process',
+        payload: processName,
+        outbound: 'proxy'
+    });
+
+    saveRules();
+    alert(`Successfully added ${processName} to whitelist!`);
+};
 
 // Navigation Logic
 const navDashboard = document.getElementById('nav-dashboard');

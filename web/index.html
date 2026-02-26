@@ -11,7 +11,7 @@
 
 <body>
     <div class="sidebar">
-        <div class="logo">GoPass <span style="font-size:12px;opacity:0.6;font-weight:normal">v1.0.3</span></div>
+        <div class="logo">GoPass <span style="font-size:12px;opacity:0.6;font-weight:normal">v1.0.4</span></div>
         <nav>
             <a href="#" class="active" id="nav-dashboard">Dashboard</a>
             <a href="#" id="nav-rules">Rules</a>
@@ -43,7 +43,7 @@
             </div>
 
             <div class="connections-view glass">
-                <h3>Recent Connections</h3>
+                <h3>Proxied Connections (Whitelisted/Global)</h3>
                 <table>
                     <thead>
                         <tr>
@@ -53,8 +53,25 @@
                             <th>Policy</th>
                         </tr>
                     </thead>
-                    <tbody id="conn-list">
-                        <!-- Connections injected here -->
+                    <tbody id="conn-list-proxy">
+                        <!-- Proxied connections -->
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="connections-view glass" style="margin-top: 20px;">
+                <h3>Direct Connections (Bypassed)</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Process</th>
+                            <th>Target</th>
+                            <th>Host</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="conn-list-direct">
+                        <!-- Direct connections -->
                     </tbody>
                 </table>
             </div>

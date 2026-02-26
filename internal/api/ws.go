@@ -77,7 +77,7 @@ func (ws *WSServer) broadcastLoop() {
 			conns = ws.eng.Stats.Connections
 			currRx = ws.eng.Stats.RxBytes
 			currTx = ws.eng.Stats.TxBytes
-			active = ws.eng.Stats.Active
+			active = ws.eng.Stats.GetActive()
 		}
 
 		rxPerSec := currRx - lastRx

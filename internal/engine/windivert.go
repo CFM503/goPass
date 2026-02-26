@@ -198,10 +198,11 @@ type Interceptor struct {
 	proxyIP     string
 	proxyPort   uint16
 	stopCh      chan struct{}
+	stats       *Stats
 }
 
 // NewInterceptor 创建拦截器
-func NewInterceptor(mode string, whitelist []string, tracker *ConnTracker, proxyIP string, proxyPort uint16) *Interceptor {
+func NewInterceptor(mode string, whitelist []string, tracker *ConnTracker, proxyIP string, proxyPort uint16, stats *Stats) *Interceptor {
 	return &Interceptor{
 		mode:      mode,
 		myPid:     uint32(os.Getpid()),
@@ -210,6 +211,7 @@ func NewInterceptor(mode string, whitelist []string, tracker *ConnTracker, proxy
 		proxyIP:   proxyIP,
 		proxyPort: proxyPort,
 		stopCh:    make(chan struct{}),
+		stats:     stats,
 	}
 }
 
@@ -443,7 +445,18 @@ func (i *Interceptor) handlePacket(pkt []byte, addr *winDivertAddress) {
 	}
 
 	if !isAllowed {
-		// 未在白名单，直接原样发回
+		// 未在白名单，或者被旁路，上报直连统计
+		if i.stats != nil {
+			targetAddr := fmt.Sprintf("%s:%d", origDstIPStr, origDstPort)
+			id := fmt.Sprintf("%s:%d", srcIP, srcPort)
+			// 如果没有名字，获取一下
+			if matchedName == "" {
+				matchedName = process.GetNameByPID(pid)
+			}
+			i.stats.ReportDirect(id, matchedName, targetAddr, origDstIPStr)
+		}
+
+		// 直接原样发回
 		i.mu.Lock()
 		h := i.handle
 		i.mu.Unlock()

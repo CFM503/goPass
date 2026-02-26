@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sync"
+	"time"
 
 	"github.com/yourusername/gopass/internal/config"
 )
@@ -26,6 +28,51 @@ type Stats struct {
 	RxBytes     int64
 	TxBytes     int64
 	Active      []map[string]interface{}
+	mu          sync.Mutex
+
+	// 记录直连程序：ID -> {Process, Target, LastSeen}
+	directItems map[string]map[string]interface{}
+}
+
+// ReportDirect 上报直连连接
+func (s *Stats) ReportDirect(id, process, target, host string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.directItems == nil {
+		s.directItems = make(map[string]map[string]interface{})
+	}
+
+	s.directItems[id] = map[string]interface{}{
+		"id":       id,
+		"process":  process,
+		"target":   target,
+		"host":     host,
+		"policy":   "DIRECT",
+		"lastSeen": time.Now(),
+	}
+}
+
+// GetActive 返回合并后的活动连接（代理 + 直连）并清理过期直连
+func (s *Stats) GetActive() []map[string]interface{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	var result []map[string]interface{}
+	result = append(result, s.Active...)
+
+	// 合并并清理直连项 (10秒没动静的就踢掉)
+	for id, item := range s.directItems {
+		lastSeen := item["lastSeen"].(time.Time)
+		if now.Sub(lastSeen) > 10*time.Second {
+			delete(s.directItems, id)
+			continue
+		}
+		result = append(result, item)
+	}
+
+	return result
 }
 
 // New 创建引擎实例
@@ -34,7 +81,8 @@ func New(cfg *config.Config) (*Engine, error) {
 		cfg:     cfg,
 		tracker: NewConnTracker(),
 		Stats: &Stats{
-			PID: os.Getpid(),
+			PID:         os.Getpid(),
+			directItems: make(map[string]map[string]interface{}),
 		},
 	}, nil
 }
@@ -84,7 +132,7 @@ func (e *Engine) Start() error {
 	go tproxy.Accept()
 
 	// 启动 WinDivert 拦截器（纯 Go syscall，无 CGo）
-	interceptor := NewInterceptor(e.cfg.Routing.Mode, whitelist, e.tracker, proxyHost, uint16(proxyPort))
+	interceptor := NewInterceptor(e.cfg.Routing.Mode, whitelist, e.tracker, proxyHost, uint16(proxyPort), e.Stats)
 	e.interceptor = interceptor
 	go interceptor.Start()
 
