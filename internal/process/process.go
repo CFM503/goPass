@@ -1,7 +1,6 @@
 package process
 
 import (
-	"fmt"
 	"strings"
 	"sync"
 	"syscall"
@@ -79,34 +78,17 @@ type PROCESSENTRY32 struct {
 	SzExeFile           [MAX_PATH]uint16
 }
 
-// GetPIDsByName 返回所有匹配进程名的 PID 列表（大小写不敏感）
+// GetPIDsByName 返回所有匹配进程名的 PID 列表（从缓存读取，节约 CPU）
 func GetPIDsByName(processName string) ([]uint32, error) {
-	snapshot, _, err := procCreateToolhelp32Snapshot.Call(TH32CS_SNAPPROCESS, 0)
-	handle := windows.Handle(snapshot)
-	if handle == windows.InvalidHandle {
-		return nil, fmt.Errorf("CreateToolhelp32Snapshot failed: %w", err)
-	}
-	defer windows.CloseHandle(handle)
-
-	var entry PROCESSENTRY32
-	entry.Size = uint32(unsafe.Sizeof(entry))
-
-	ret, _, _ := procProcess32FirstW.Call(uintptr(handle), uintptr(unsafe.Pointer(&entry)))
-	if ret == 0 {
-		return nil, fmt.Errorf("Process32First failed")
-	}
-
-	var pids []uint32
 	nameLower := strings.ToLower(processName)
-	for {
-		name := strings.ToLower(syscall.UTF16ToString(entry.SzExeFile[:]))
-		if name == nameLower {
-			pids = append(pids, entry.Th32ProcessID)
-		}
+	var pids []uint32
 
-		ret, _, _ = procProcess32NextW.Call(uintptr(handle), uintptr(unsafe.Pointer(&entry)))
-		if ret == 0 {
-			break
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
+
+	for pid, name := range nameCache {
+		if strings.ToLower(name) == nameLower {
+			pids = append(pids, pid)
 		}
 	}
 

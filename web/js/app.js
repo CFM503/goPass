@@ -40,38 +40,42 @@ function connectWS() {
 function renderConnections(conns) {
     const proxyBody = document.getElementById('conn-list-proxy');
     const directBody = document.getElementById('conn-list-direct');
-    
+
     proxyBody.innerHTML = '';
     directBody.innerHTML = '';
 
-    conns.forEach(c => {
-        const tr = document.createElement('tr');
-        if (c.policy === 'PROXY') {
-            tr.innerHTML = `
-                <td>${c.process}</td>
-                <td>${c.target}</td>
-                <td>${c.host}</td>
-                <td><span style="color: var(--accent)">${c.policy}</span></td>
-            `;
-            proxyBody.appendChild(tr);
-        } else {
-            const isAlreadyWhitelisted = currentRules.some(r => r.payload === c.process);
-            const buttonHtml = isAlreadyWhitelisted 
-                ? `<span style="color:var(--text-secondary); font-size:12px;">Already in Whitelist</span>`
-                : `<button onclick="quickAddRule('${c.process}')" style="padding:4px 8px; background:var(--accent); border:none; color:white; border-radius:4px; cursor:pointer; font-size:12px;">Add to Rules</button>`;
+    const proxyConns = conns.filter(c => c.policy === 'PROXY').slice(0, 50);
+    const directConns = conns.filter(c => c.policy !== 'PROXY').slice(0, 50);
 
-            tr.innerHTML = `
-                <td>${c.process}</td>
-                <td>${c.target}</td>
-                <td>${c.host}</td>
-                <td>${buttonHtml}</td>
-            `;
-            directBody.appendChild(tr);
-        }
+    proxyConns.forEach(c => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td>${c.process}</td>
+            <td>${c.target}</td>
+            <td>${c.host}</td>
+            <td><span style="color: var(--accent)">${c.policy}</span></td>
+        `;
+        proxyBody.appendChild(tr);
+    });
+
+    directConns.forEach(c => {
+        const tr = document.createElement('tr');
+        const isAlreadyWhitelisted = currentRules.some(r => r.payload === c.process);
+        const buttonHtml = isAlreadyWhitelisted
+            ? `<span style="color:var(--text-secondary); font-size:12px;">Already in Whitelist</span>`
+            : `<button onclick="quickAddRule('${c.process}')" style="padding:4px 8px; background:var(--accent); border:none; color:white; border-radius:4px; cursor:pointer; font-size:12px;">Add to Rules</button>`;
+
+        tr.innerHTML = `
+            <td>${c.process}</td>
+            <td>${c.target}</td>
+            <td>${c.host}</td>
+            <td>${buttonHtml}</td>
+        `;
+        directBody.appendChild(tr);
     });
 }
 
-window.quickAddRule = function(processName) {
+window.quickAddRule = function (processName) {
     if (processName === 'unknown' || !processName) {
         alert("Cannot add unknown process.");
         return;

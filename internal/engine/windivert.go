@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -430,16 +431,15 @@ func (i *Interceptor) handlePacket(pkt []byte, addr *winDivertAddress) {
 			matchedName = process.GetNameByPID(pid)
 		}
 	} else {
+		// 性能优化核心点：先获取包所属的进程名（已完全缓存）
+		pName := process.GetNameByPID(pid)
+		pNameLower := strings.ToLower(pName)
+
+		// 然后对比白名单，大幅减少循环和重复的系统快照调用
 		for _, name := range whitelist {
-			pids, _ := process.GetPIDsByName(name)
-			for _, p := range pids {
-				if p == pid {
-					isAllowed = true
-					matchedName = name
-					break
-				}
-			}
-			if isAllowed {
+			if strings.ToLower(name) == pNameLower {
+				isAllowed = true
+				matchedName = name
 				break
 			}
 		}

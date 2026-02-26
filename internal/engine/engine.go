@@ -73,10 +73,10 @@ func (s *Stats) GetActive() []map[string]interface{} {
 	var result []map[string]interface{}
 	result = append(result, s.Active...)
 
-	// 合并并清理直连项 (10秒没动静的就踢掉)
+	// 合并并清理直连项 (5秒没动静的就踢掉，再次减少内存压力)
 	for id, item := range s.directItems {
 		lastSeen := item["lastSeen"].(time.Time)
-		if now.Sub(lastSeen) > 10*time.Second {
+		if now.Sub(lastSeen) > 5*time.Second {
 			delete(s.directItems, id)
 			continue
 		}
