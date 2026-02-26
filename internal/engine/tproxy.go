@@ -105,10 +105,14 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 		tp.mu.Lock()
 		if tp.stats != nil {
 			tp.stats.Connections--
-			// Remove from Active list
-			for i, v := range tp.stats.Active {
-				if v["id"] == fmt.Sprintf("%s:%d", srcIP, srcPort) {
-					tp.stats.Active = append(tp.stats.Active[:i], tp.stats.Active[i+1:]...)
+			// 解决 Active 切片缩减引发的底层指针垃圾回收泄漏 (Pointer Leak Trap)
+			activeLen := len(tp.stats.Active)
+			for i := 0; i < activeLen; i++ {
+				if tp.stats.Active[i]["id"] == fmt.Sprintf("%s:%d", srcIP, srcPort) {
+					// 将最后一个元素移到当前位置（不关心顺序）并置空最后一个元素
+					tp.stats.Active[i] = tp.stats.Active[activeLen-1]
+					tp.stats.Active[activeLen-1] = nil // 显式置空，帮助 GC
+					tp.stats.Active = tp.stats.Active[:activeLen-1]
 					break
 				}
 			}
@@ -116,25 +120,38 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 		tp.mu.Unlock()
 	}()
 
-	// 双向数据中继并统计流量
+	// 为 io.Copy 包裹一层统计跟踪器，解决大文件下载统计卡死的问题 (Real-time stat fix)
 	done := make(chan struct{}, 2)
-	relay := func(dst, src net.Conn, isRx bool) {
-		written, _ := io.Copy(dst, src)
-		// Update byte counters
-		tp.mu.Lock()
-		if tp.stats != nil {
-			if isRx {
-				tp.stats.RxBytes += written
-			} else {
-				tp.stats.TxBytes += written
-			}
-		}
-		tp.mu.Unlock()
+	go func() {
+		_, _ = io.Copy(remote, &statTracker{Reader: conn, tp: tp, isRx: false})
 		done <- struct{}{}
-	}
-	go relay(remote, conn, false) // 发送 (Tx)
-	go relay(conn, remote, true)  // 接收 (Rx)
+	}()
+	go func() {
+		_, _ = io.Copy(conn, &statTracker{Reader: remote, tp: tp, isRx: true})
+		done <- struct{}{}
+	}()
 	<-done
+}
+
+// statTracker 包装 io.Reader 实现一边传输一边实时增加统计字节数
+type statTracker struct {
+	io.Reader
+	tp   *TProxy
+	isRx bool
+}
+
+func (st *statTracker) Read(p []byte) (n int, err error) {
+	n, err = st.Reader.Read(p)
+	if n > 0 && st.tp.stats != nil {
+		st.tp.mu.Lock()
+		if st.isRx {
+			st.tp.stats.RxBytes += int64(n)
+		} else {
+			st.tp.stats.TxBytes += int64(n)
+		}
+		st.tp.mu.Unlock()
+	}
+	return n, err
 }
 
 // Close 关闭监听器

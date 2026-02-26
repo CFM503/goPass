@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 )
 
 // ConnKey 唯一标识一条被劫持的连接（源 IP + 源端口）
@@ -21,18 +22,23 @@ type ConnTarget struct {
 	OrigIfIdx    uint32
 	OrigSubIfIdx uint32
 	ProcessName  string
+	CreatedAt    time.Time
 }
 
 // ConnTracker 跟踪所有被透明劫持的连接源→目标
 type ConnTracker struct {
 	mu      sync.RWMutex
 	entries map[ConnKey]ConnTarget
+	stopCh  chan struct{}
 }
 
 func NewConnTracker() *ConnTracker {
-	return &ConnTracker{
+	ct := &ConnTracker{
 		entries: make(map[ConnKey]ConnTarget),
+		stopCh:  make(chan struct{}),
 	}
+	go ct.startGC()
+	return ct
 }
 
 func (ct *ConnTracker) Set(mappedIP string, mappedPort uint16, origSrcIP net.IP, origSrcPort uint16, origDstIP net.IP, origDstPort uint16, origIfIdx uint32, origSubIfIdx uint32, processName string) {
@@ -46,6 +52,7 @@ func (ct *ConnTracker) Set(mappedIP string, mappedPort uint16, origSrcIP net.IP,
 		OrigIfIdx:    origIfIdx,
 		OrigSubIfIdx: origSubIfIdx,
 		ProcessName:  processName,
+		CreatedAt:    time.Now(),
 	}
 }
 
@@ -60,6 +67,32 @@ func (ct *ConnTracker) Delete(srcIP string, srcPort uint16) {
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
 	delete(ct.entries, ConnKey{srcIP, srcPort})
+}
+
+// startGC 定期清理超时的孤儿连接记录 (防御内存泄漏)
+func (ct *ConnTracker) startGC() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ct.stopCh:
+			return
+		case <-ticker.C:
+			now := time.Now()
+			ct.mu.Lock()
+			for k, v := range ct.entries {
+				// 如果记录在 60 秒内没被 TProxy 接管使用(Delete掉)，就认为是死连接，将其清理
+				if now.Sub(v.CreatedAt) > 60*time.Second {
+					delete(ct.entries, k)
+				}
+			}
+			ct.mu.Unlock()
+		}
+	}
+}
+
+func (ct *ConnTracker) Close() {
+	close(ct.stopCh)
 }
 
 func (ct *ConnTarget) String() string {
