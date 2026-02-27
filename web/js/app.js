@@ -8,17 +8,22 @@ function connectWS() {
     const socket = new WebSocket(wsUrl);
 
     socket.onopen = () => {
-        const el = document.getElementById('status');
-        if (el) { el.innerText = 'Running'; el.style.color = 'var(--accent)'; }
+        const el = document.getElementById('engine-status');
+        if (el) { el.classList.remove('red'); el.classList.add('green'); }
     };
 
     socket.onmessage = (event) => {
         try {
             const data = JSON.parse(event.data);
-            const connEl = document.getElementById('active-conns');
+            const pidEl = document.getElementById('sys-pid');
+            if (pidEl && data.pid) pidEl.innerText = data.pid;
+
+            const connEl = document.getElementById('conn-count');
             if (connEl) connEl.innerText = data.connections || 0;
+
             const rxEl = document.getElementById('rx-bytes');
             if (rxEl) rxEl.innerText = data.rx || "0 B/s";
+
             const txEl = document.getElementById('tx-bytes');
             if (txEl) txEl.innerText = data.tx || "0 B/s";
 
@@ -31,8 +36,8 @@ function connectWS() {
     };
 
     socket.onclose = () => {
-        const el = document.getElementById('status');
-        if (el) { el.innerText = 'Offline'; el.style.color = '#ff4d4d'; }
+        const el = document.getElementById('engine-status');
+        if (el) { el.classList.remove('green'); el.classList.add('red'); }
         setTimeout(connectWS, 3000);
     };
 }
