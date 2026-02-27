@@ -221,10 +221,11 @@ func NewInterceptor(mode string, whitelist []string, tracker *ConnTracker, proxy
 func (i *Interceptor) buildFilter() string {
 	// 拦截：
 	// 1. 出站 TCP (准备劫持)
-	// 2. 出站 UDP 443 (YouTube/QUIC, 准备静默丢弃以纠正浏览器回退 TCP)
+	// 2. 出站 IPv6 (防泄露，由于目前上游大多不走 v6，防止双栈解析回退直连)
 	// 3. TProxy 返回的 TCP 包 (反向 NAT)
+	// 注意：彻底删除了针对 UDP(QUIC) 443 的 Drop 规则，将兜底报 RST/ICMP 控制权还给操作系统，防止假死！
 	filter := fmt.Sprintf("(outbound and ip and tcp and ip.DstAddr != 127.0.0.1) or "+
-		"(outbound and ip and udp and udp.DstPort == 443) or "+
+		"(outbound and ipv6) or "+
 		"(outbound and ip and tcp and tcp.SrcPort == %d)", TProxyPort)
 
 	if i.proxyIP != "" && i.proxyIP != "127.0.0.1" {
@@ -356,15 +357,11 @@ func (i *Interceptor) handlePacket(pkt []byte, addr *winDivertAddress) {
 	origDstIPStr := origDstIP.String()
 	srcIP := net.IP(pkt[12:16]).String()
 
-	// 特殊处理：如果是 UDP 443 (QUIC)，直接丢弃 (不发回也不处理)
-	// 这样浏览器会因为 UDP 不通而自动降级到 TCP (HTTPS)，从而被我们下方的逻辑代理
-	isUDP := pkt[9] == 17 // UDP Protocol Number
-	if isUDP {
-		dstPort := binary.BigEndian.Uint16(pkt[ipHeaderLen+2 : ipHeaderLen+4])
-		if dstPort == 443 {
-			// 静默丢弃
-			return
-		}
+	// 拦截到 IPv6 包（因为 filter 加了 outbound and ipv6）
+	// 直接静默丢弃不发回，暴力阻止本地环境泄露双栈请求
+	isIPv6 := (pkt[0] >> 4) == 6
+	if isIPv6 {
+		return
 	}
 
 	// 先判断是否为 TProxy 发回的数据包（反向 NAT）

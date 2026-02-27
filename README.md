@@ -32,8 +32,8 @@ A high-performance, Zero-Copy transparent proxy for Windows, tailored for extrem
 ## 📥 Installation & Usage / 安装与使用
 
 1. **Download / 下载**  
-   Compile from source using `go build` or download the ultra-slim release executable `gopass_1.1.3.exe`.  
-   根据源码自行编译，或直接下载极限瘦身的成品执行文件 `gopass_1.1.3.exe`。
+   Compile from source using `go build` or download the ultra-slim release executable `gopass_1.1.4.exe`.  
+   根据源码自行编译，或直接下载极限瘦身的成品执行文件 `gopass_1.1.4.exe`。
 
 2. **Run as Administrator / 提权运行**  
    ⚠️ GoPass **MUST** be run as Administrator because the `WinDivert` driver requires high-level system permissions.  

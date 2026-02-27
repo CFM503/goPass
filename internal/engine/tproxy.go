@@ -102,7 +102,8 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 
 	if isHTTPS {
 		// 尝试读取客户端发来的第一段数据 (通常是 TLS ClientHello)
-		conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		// 延长至 2000ms 以应对碎片包或高并发下的首包延迟，防止读错 SNI 被降级
+		conn.SetReadDeadline(time.Now().Add(2000 * time.Millisecond))
 		buf := bufferPool.Get().([]byte)
 		n, err := conn.Read(buf)
 		conn.SetReadDeadline(time.Time{}) // 恢复阻止模式
