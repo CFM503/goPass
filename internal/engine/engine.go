@@ -99,7 +99,13 @@ func (s *Stats) GetActive() []map[string]interface{} {
 
 	now := time.Now()
 	var result []map[string]interface{}
-	result = append(result, s.Active...)
+	for _, item := range s.Active {
+		copyItem := make(map[string]interface{})
+		for k, v := range item {
+			copyItem[k] = v
+		}
+		result = append(result, copyItem)
+	}
 
 	// 合并并清理直连项 (5秒没动静的就踢掉，再次减少内存压力)
 	for id, item := range s.directItems {
@@ -108,7 +114,11 @@ func (s *Stats) GetActive() []map[string]interface{} {
 			delete(s.directItems, id)
 			continue
 		}
-		result = append(result, item)
+		copyItem := make(map[string]interface{})
+		for k, v := range item {
+			copyItem[k] = v
+		}
+		result = append(result, copyItem)
 	}
 
 	return result
