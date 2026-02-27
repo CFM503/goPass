@@ -236,7 +236,7 @@ document.getElementById('save-settings-btn').addEventListener('click', () => {
     const mode = isGlobal ? 'global' : 'whitelist';
 
     let wsInterval = parseInt(document.getElementById('ws-interval').value, 10);
-    if (isNaN(wsInterval) || wsInterval < 1) wsInterval = 3;
+    if (isNaN(wsInterval) || wsInterval < 1) wsInterval = 5;
 
     let connLimit = parseInt(document.getElementById('ui-conn-limit').value, 10);
     if (isNaN(connLimit) || connLimit < 5) connLimit = 20;
