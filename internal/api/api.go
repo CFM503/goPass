@@ -55,7 +55,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if r.Method == http.MethodGet {
 		mode := "whitelist"
-		interval := 5
+		interval := 1
 		if s.engine != nil && s.engine.GetConfig() != nil {
 			mode = s.engine.GetConfig().Routing.Mode
 			interval = s.engine.GetConfig().API.WSRefreshInterval
@@ -73,7 +73,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
 			if s.engine != nil && s.engine.GetConfig() != nil {
 				if req.WSRefreshInterval < 1 {
-					req.WSRefreshInterval = 5
+					req.WSRefreshInterval = 1
 				}
 				s.engine.GetConfig().API.WSRefreshInterval = req.WSRefreshInterval
 			}

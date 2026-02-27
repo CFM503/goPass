@@ -50,7 +50,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		API: APIConfig{
 			ListenAddr:        "127.0.0.1:8080",
-			WSRefreshInterval: 5,
+			WSRefreshInterval: 1,
 		},
 		DNS: DNSConfig{
 			ListenAddr:  "127.0.0.1:53",

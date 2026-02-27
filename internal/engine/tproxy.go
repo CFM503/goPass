@@ -162,9 +162,7 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 	}
 
 	// 记录活动连接
-	tp.mu.Lock()
 	if tp.stats != nil {
-		tp.stats.Connections++
 		connInfo := map[string]interface{}{
 			"id":      fmt.Sprintf("%s:%d", srcIP, srcPort),
 			"process": target.ProcessName,
@@ -172,27 +170,13 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 			"host":    target.OrigDstIP.String(),
 			"policy":  "PROXY",
 		}
-		tp.stats.Active = append(tp.stats.Active, connInfo)
+		tp.stats.AddActiveConn(connInfo)
 	}
-	tp.mu.Unlock()
 
 	defer func() {
-		tp.mu.Lock()
 		if tp.stats != nil {
-			tp.stats.Connections--
-			// 解决 Active 切片缩减引发的底层指针垃圾回收泄漏 (Pointer Leak Trap)
-			activeLen := len(tp.stats.Active)
-			for i := 0; i < activeLen; i++ {
-				if tp.stats.Active[i]["id"] == fmt.Sprintf("%s:%d", srcIP, srcPort) {
-					// 将最后一个元素移到当前位置（不关心顺序）并置空最后一个元素
-					tp.stats.Active[i] = tp.stats.Active[activeLen-1]
-					tp.stats.Active[activeLen-1] = nil // 显式置空，帮助 GC
-					tp.stats.Active = tp.stats.Active[:activeLen-1]
-					break
-				}
-			}
+			tp.stats.RemoveActiveConn(fmt.Sprintf("%s:%d", srcIP, srcPort))
 		}
-		tp.mu.Unlock()
 	}()
 
 	// 彻底移除 statTracker，恢复原生 io.Copy 实现内核级 Zero-Copy

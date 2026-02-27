@@ -34,6 +34,34 @@ type Stats struct {
 	directItems map[string]map[string]interface{}
 }
 
+// AddActiveConn 增加一个活动代理连接
+func (s *Stats) AddActiveConn(connInfo map[string]interface{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Connections++
+	if s.Active == nil {
+		s.Active = make([]map[string]interface{}, 0)
+	}
+	s.Active = append(s.Active, connInfo)
+}
+
+// RemoveActiveConn 移除一个活动代理连接
+func (s *Stats) RemoveActiveConn(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	activeLen := len(s.Active)
+	for i := 0; i < activeLen; i++ {
+		if s.Active[i]["id"] == id {
+			s.Connections--
+			s.Active[i] = s.Active[activeLen-1]
+			s.Active[activeLen-1] = nil // 显式置空，帮助 GC
+			s.Active = s.Active[:activeLen-1]
+			break
+		}
+	}
+}
+
 // ReportDirect 上报直连连接 (增加频率限制，每 5 秒针对同一个 ID 仅处理一次)
 func (s *Stats) ReportDirect(id, process, target, host string) {
 	s.mu.Lock()
