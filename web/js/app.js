@@ -8,19 +8,19 @@ function connectWS() {
     const socket = new WebSocket(wsUrl);
 
     socket.onopen = () => {
-        document.getElementById('engine-status').classList.remove('red');
-        document.getElementById('engine-status').classList.add('green');
+        const el = document.getElementById('status');
+        if (el) { el.innerText = 'Running'; el.style.color = 'var(--accent)'; }
     };
 
     socket.onmessage = (event) => {
         try {
             const data = JSON.parse(event.data);
-            if (data.pid) {
-                document.getElementById('sys-pid').innerText = data.pid;
-            }
-            document.getElementById('conn-count').innerText = data.connections || 0;
-            document.getElementById('rx').innerText = data.rx || "0 B/s";
-            document.getElementById('tx').innerText = data.tx || "0 B/s";
+            const connEl = document.getElementById('active-conns');
+            if (connEl) connEl.innerText = data.connections || 0;
+            const rxEl = document.getElementById('rx-bytes');
+            if (rxEl) rxEl.innerText = data.rx || "0 B/s";
+            const txEl = document.getElementById('tx-bytes');
+            if (txEl) txEl.innerText = data.tx || "0 B/s";
 
             if (data.active) {
                 renderConnections(data.active);
@@ -31,8 +31,8 @@ function connectWS() {
     };
 
     socket.onclose = () => {
-        document.getElementById('engine-status').classList.remove('green');
-        document.getElementById('engine-status').classList.add('red');
+        const el = document.getElementById('status');
+        if (el) { el.innerText = 'Offline'; el.style.color = '#ff4d4d'; }
         setTimeout(connectWS, 3000);
     };
 }
