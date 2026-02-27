@@ -1,3 +1,5 @@
+let uiConnLimit = 20;
+
 document.addEventListener('DOMContentLoaded', () => {
     connectWS();
     loadRules(); // Load rules initially for deduplication check
@@ -49,8 +51,11 @@ function renderConnections(conns) {
     proxyBody.innerHTML = '';
     directBody.innerHTML = '';
 
-    const proxyConns = conns.filter(c => c.policy === 'PROXY').slice(0, 50);
-    const directConns = conns.filter(c => c.policy !== 'PROXY').slice(0, 50);
+    const proxyConns = conns.filter(c => c.policy === 'PROXY').slice(0, uiConnLimit);
+    const directConns = conns.filter(c => c.policy !== 'PROXY').slice(0, uiConnLimit);
+
+    document.getElementById('proxy-title').innerText = `Proxied Connections (Top ${uiConnLimit})`;
+    document.getElementById('direct-title').innerText = `Direct Connections (Top ${uiConnLimit})`;
 
     proxyConns.forEach(c => {
         const tr = document.createElement('tr');
@@ -208,6 +213,10 @@ function loadSettings() {
             if (data.ws_refresh_interval) {
                 document.getElementById('ws-interval').value = data.ws_refresh_interval;
             }
+            if (data.ui_conn_limit) {
+                document.getElementById('ui-conn-limit').value = data.ui_conn_limit;
+                uiConnLimit = data.ui_conn_limit;
+            }
         })
         .catch(console.error);
 
@@ -227,7 +236,11 @@ document.getElementById('save-settings-btn').addEventListener('click', () => {
     const mode = isGlobal ? 'global' : 'whitelist';
 
     let wsInterval = parseInt(document.getElementById('ws-interval').value, 10);
-    if (isNaN(wsInterval) || wsInterval < 1) wsInterval = 5;
+    if (isNaN(wsInterval) || wsInterval < 1) wsInterval = 3;
+
+    let connLimit = parseInt(document.getElementById('ui-conn-limit').value, 10);
+    if (isNaN(connLimit) || connLimit < 5) connLimit = 20;
+    uiConnLimit = connLimit;
 
     const pType = document.getElementById('upstream-type').value;
     const pAddr = document.getElementById('upstream-addr').value.trim();
@@ -246,7 +259,7 @@ document.getElementById('save-settings-btn').addEventListener('click', () => {
         fetch('/api/settings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ mode: mode, ws_refresh_interval: wsInterval })
+            body: JSON.stringify({ mode: mode, ws_refresh_interval: wsInterval, ui_conn_limit: connLimit })
         }),
         fetch('/api/upstream', {
             method: 'POST',

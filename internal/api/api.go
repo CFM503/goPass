@@ -55,27 +55,37 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if r.Method == http.MethodGet {
 		mode := "whitelist"
-		interval := 1
+		interval := 3
+		connLimit := 20
 		if s.engine != nil && s.engine.GetConfig() != nil {
 			mode = s.engine.GetConfig().Routing.Mode
 			interval = s.engine.GetConfig().API.WSRefreshInterval
+			if s.engine.GetConfig().API.UIConnLimit > 0 {
+				connLimit = s.engine.GetConfig().API.UIConnLimit
+			}
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"mode":                mode,
 			"ws_refresh_interval": interval,
+			"ui_conn_limit":       connLimit,
 		})
 		return
 	} else if r.Method == http.MethodPost {
 		var req struct {
 			Mode              string `json:"mode"`
 			WSRefreshInterval int    `json:"ws_refresh_interval"`
+			UIConnLimit       int    `json:"ui_conn_limit"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
 			if s.engine != nil && s.engine.GetConfig() != nil {
 				if req.WSRefreshInterval < 1 {
-					req.WSRefreshInterval = 1
+					req.WSRefreshInterval = 3
+				}
+				if req.UIConnLimit < 1 {
+					req.UIConnLimit = 20
 				}
 				s.engine.GetConfig().API.WSRefreshInterval = req.WSRefreshInterval
+				s.engine.GetConfig().API.UIConnLimit = req.UIConnLimit
 			}
 			s.engine.UpdateMode(req.Mode, "config.json")
 			json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})

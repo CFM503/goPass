@@ -15,6 +15,7 @@ type Config struct {
 type APIConfig struct {
 	ListenAddr        string `json:"listen_addr"`
 	WSRefreshInterval int    `json:"ws_refresh_interval"`
+	UIConnLimit       int    `json:"ui_conn_limit"`
 }
 
 type DNSConfig struct {
@@ -50,7 +51,8 @@ func DefaultConfig() *Config {
 	return &Config{
 		API: APIConfig{
 			ListenAddr:        "127.0.0.1:8080",
-			WSRefreshInterval: 1,
+			WSRefreshInterval: 3,
+			UIConnLimit:       20,
 		},
 		DNS: DNSConfig{
 			ListenAddr:  "127.0.0.1:53",

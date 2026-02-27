@@ -43,7 +43,7 @@
             </div>
 
             <section class="card">
-                <h2>Proxied Connections (Top 50)</h2>
+                <h2 id="proxy-title">Proxied Connections (Top 20)</h2>
                 <table>
                     <thead>
                         <tr>
@@ -61,7 +61,7 @@
 
             <section class="card" style="margin-top: 24px;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-                    <h2 style="margin: 0;">Direct Connections (Top 50)</h2>
+                    <h2 id="direct-title" style="margin: 0;">Direct Connections (Top 20)</h2>
                     <span style="font-size: 12px; color: var(--text-secondary);">Real-time bypass monitor</span>
                 </div>
                 <table>
@@ -107,10 +107,17 @@
                 <h3>Dashboard Optimization</h3>
                 <p style="color:#a1a1aa; margin-bottom: 15px">Adjust the WebSocket refresh interval to reduce CPU & RAM
                     overhead. (seconds)</p>
-                <div style="display:flex; gap: 10px; align-items: center; margin-bottom: 20px;">
-                    <label style="color:var(--text-secondary); width:80px;">Interval</label>
-                    <input type="number" id="ws-interval" placeholder="e.g. 1" value="1" min="1"
+                <div style="display:flex; gap: 10px; align-items: center; margin-bottom: 15px;">
+                    <label style="color:var(--text-secondary); width:130px;">Refresh Interval</label>
+                    <input type="number" id="ws-interval" placeholder="e.g. 3" value="3" min="1"
                         style="padding:10px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color:white; border-radius:4px; width:100px;">
+                    <span style="color:var(--text-secondary);">Seconds</span>
+                </div>
+                <div style="display:flex; gap: 10px; align-items: center; margin-bottom: 20px;">
+                    <label style="color:var(--text-secondary); width:130px;">Max Connections</label>
+                    <input type="number" id="ui-conn-limit" placeholder="e.g. 20" value="20" min="5"
+                        style="padding:10px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color:white; border-radius:4px; width:100px;">
+                    <span style="color:var(--text-secondary);">Items displayed</span>
                 </div>
 
                 <hr style="border:none; border-top:1px solid rgba(255,255,255,0.1); margin: 30px 0;">
