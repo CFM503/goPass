@@ -196,6 +196,7 @@ window.deleteRule = function (idx) {
 
 // Settings API
 function loadSettings() {
+    // Load Proxy Mode
     fetch('/api/settings')
         .then(res => res.json())
         .then(data => {
@@ -206,22 +207,60 @@ function loadSettings() {
             }
         })
         .catch(console.error);
+
+    // Load Upstream Proxy Settings
+    fetch('/api/upstream')
+        .then(res => res.json())
+        .then(data => {
+            if (data.type) document.getElementById('upstream-type').value = data.type;
+            if (data.address) document.getElementById('upstream-addr').value = data.address;
+            if (data.port) document.getElementById('upstream-port').value = data.port;
+        })
+        .catch(console.error);
 }
 
 document.getElementById('save-settings-btn').addEventListener('click', () => {
     const isGlobal = document.getElementById('mode-global').checked;
     const mode = isGlobal ? 'global' : 'whitelist';
 
-    fetch('/api/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode })
-    })
-        .then(res => res.json())
-        .then(data => {
-            if (data.status === 'ok') {
-                alert('Settings saved successfully!');
-            }
+    const pType = document.getElementById('upstream-type').value;
+    const pAddr = document.getElementById('upstream-addr').value.trim();
+    const pPort = parseInt(document.getElementById('upstream-port').value, 10);
+
+    if (!pAddr || isNaN(pPort)) {
+        alert("Please enter a valid proxy address and port.");
+        return;
+    }
+
+    const btn = document.getElementById('save-settings-btn');
+    const msg = document.getElementById('settings-save-msg');
+    btn.innerText = "Saving...";
+
+    Promise.all([
+        fetch('/api/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode })
+        }),
+        fetch('/api/upstream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: pType, address: pAddr, port: pPort })
         })
-        .catch(console.error);
+    ]).then(([resSettings, resUpstream]) => {
+        return Promise.all([resSettings.json(), resUpstream.json()]);
+    }).then(([dataSettings, dataUpstream]) => {
+        btn.innerText = "Save Global Settings";
+        if (dataSettings.status === 'ok' && dataUpstream.status === 'ok') {
+            msg.style.display = 'inline-block';
+            setTimeout(() => { msg.style.display = 'none'; }, 3000);
+        } else {
+            alert('Error saving some settings.');
+        }
+    }).catch(err => {
+        console.error(err);
+        btn.innerText = "Save Global Settings";
+        alert("Network error while saving.");
+    });
 });
+

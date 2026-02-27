@@ -11,7 +11,7 @@
 
 <body>
     <div class="sidebar">
-        <div class="logo">GoPass <span style="font-size:12px;opacity:0.6;font-weight:normal">v1.1.1</span></div>
+        <div class="logo">GoPass <span style="font-size:12px;opacity:0.6;font-weight:normal">v1.1.2</span></div>
         <nav>
             <a href="#" class="active" id="nav-dashboard">Dashboard</a>
             <a href="#" id="nav-rules">Rules</a>
@@ -127,9 +127,40 @@
                     </label>
                 </div>
 
-                <button id="save-settings-btn"
-                    style="margin-top:20px; padding: 10px 20px; background:var(--accent); border:none; color:white; border-radius:4px; cursor:pointer;">Save
-                    Settings</button>
+                <hr style="border:none; border-top:1px solid rgba(255,255,255,0.1); margin: 30px 0;">
+
+                <h3>Upstream Proxy</h3>
+                <p style="color:#a1a1aa; margin-bottom: 20px">Configure your upstream proxy server. Changes take effect
+                    immediately without restart.</p>
+
+                <div style="display:flex; gap: 10px; align-items: center; margin-bottom: 15px;">
+                    <label style="color:var(--text-secondary); width:80px;">Protocol</label>
+                    <select id="upstream-type"
+                        style="padding:10px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color:white; border-radius:4px; flex:1;">
+                        <option value="socks5">SOCKS5</option>
+                        <option value="http">HTTP / HTTPS</option>
+                    </select>
+                </div>
+
+                <div style="display:flex; gap: 10px; align-items: center; margin-bottom: 15px;">
+                    <label style="color:var(--text-secondary); width:80px;">Address</label>
+                    <input type="text" id="upstream-addr" placeholder="e.g. 127.0.0.1"
+                        style="padding:10px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color:white; border-radius:4px; flex:1;">
+                </div>
+
+                <div style="display:flex; gap: 10px; align-items: center;">
+                    <label style="color:var(--text-secondary); width:80px;">Port</label>
+                    <input type="number" id="upstream-port" placeholder="e.g. 1080"
+                        style="padding:10px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color:white; border-radius:4px; width:100px;">
+                </div>
+
+                <div style="margin-top: 30px; display: flex; gap: 15px;">
+                    <button id="save-settings-btn"
+                        style="padding: 10px 20px; background:var(--accent); border:none; color:white; border-radius:4px; cursor:pointer;">Save
+                        Global Settings</button>
+                    <span id="settings-save-msg" style="color: #238636; line-height: 38px; display: none;">✅ Settings
+                        Saved & Applied</span>
+                </div>
             </div>
         </div>
     </div>

@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,28 +14,43 @@ import (
 
 // TProxy 是本地透明代理 TCP 监听器
 // 它监听 127.0.0.1:7893，接收 WinDivert 劫持过来的连接
-// 然后查出原始目标，通过 SOCKS5 代理转发
+// 然后查出原始目标，通过 SOCKS5/HTTP 代理转发
 type TProxy struct {
-	listener   net.Listener
-	tracker    *ConnTracker
-	socks5Addr string // e.g. "127.0.0.1:9192"
-	stats      *Stats
-	mu         sync.Mutex
+	listener net.Listener
+	tracker  *ConnTracker
+
+	// 上游代理配置（支持热身修改）
+	proxyType string // "socks5" or "http"
+	proxyAddr string // e.g. "127.0.0.1:9192"
+	proxyMu   sync.RWMutex
+
+	stats *Stats
+	mu    sync.Mutex
 }
 
 // NewTProxy 创建本地代理监听器
-func NewTProxy(tracker *ConnTracker, socks5Addr string, stats *Stats) (*TProxy, error) {
+func NewTProxy(tracker *ConnTracker, proxyType, proxyAddr string, stats *Stats) (*TProxy, error) {
 	ln, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", TProxyPort))
 	if err != nil {
 		return nil, fmt.Errorf("TProxy listen failed: %w", err)
 	}
 	log.Printf("[TProxy] 本地透明代理监听: 0.0.0.0:%d", TProxyPort)
 	return &TProxy{
-		listener:   ln,
-		tracker:    tracker,
-		socks5Addr: socks5Addr,
-		stats:      stats,
+		listener:  ln,
+		tracker:   tracker,
+		proxyType: proxyType,
+		proxyAddr: proxyAddr,
+		stats:     stats,
 	}, nil
+}
+
+// UpdateUpstream 热更上游代理配置
+func (tp *TProxy) UpdateUpstream(pType, pAddr string) {
+	tp.proxyMu.Lock()
+	defer tp.proxyMu.Unlock()
+	tp.proxyType = pType
+	tp.proxyAddr = pAddr
+	log.Printf("[TProxy] 🔄 上游代理已热切换为: %s -> %s", pType, pAddr)
 }
 
 // Accept 开始接受连接（阻塞）
@@ -98,18 +114,32 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 		}
 	}
 
-	log.Printf("[TProxy] %s:%d -> 经 SOCKS5 转发至 -> %s", srcIP, srcPort, targetAddr)
+	// 获取当前最新上游配置
+	tp.proxyMu.RLock()
+	pType := tp.proxyType
+	pAddr := tp.proxyAddr
+	tp.proxyMu.RUnlock()
 
-	// 通过 SOCKS5 连接目标
-	dialer, err := proxy.SOCKS5("tcp", tp.socks5Addr, nil, proxy.Direct)
-	if err != nil {
-		log.Printf("[TProxy] SOCKS5 dialer 创建失败: %v", err)
+	log.Printf("[TProxy] %s:%d -> 经 %s 转发至 -> %s", srcIP, srcPort, strings.ToUpper(pType), targetAddr)
+
+	var dialer proxy.Dialer
+	var errDialer error
+
+	if pType == "http" {
+		dialer, errDialer = NewHTTPProxy(pAddr, "", "", proxy.Direct)
+	} else {
+		// 默认 socks5
+		dialer, errDialer = proxy.SOCKS5("tcp", pAddr, nil, proxy.Direct)
+	}
+
+	if errDialer != nil {
+		log.Printf("[TProxy] 代理 Dialer 创建失败: %v", errDialer)
 		return
 	}
 
 	remote, err := dialer.Dial("tcp", targetAddr)
 	if err != nil {
-		log.Printf("[TProxy] SOCKS5 连接失败 %s: %v", targetAddr, err)
+		log.Printf("[TProxy] 上游连接失败 %s: %v", targetAddr, err)
 		return
 	}
 	defer remote.Close()

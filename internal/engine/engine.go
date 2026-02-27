@@ -102,18 +102,20 @@ func New(cfg *config.Config) (*Engine, error) {
 func (e *Engine) Start() error {
 	log.Printf("[Engine] GoPass 启动，PID=%d", e.Stats.PID)
 
-	// 找到第一个 socks5 代理服务器地址
-	socks5Addr := ""
+	// 找到第一个支持的代理服务器地址 (SOCKS5 或 HTTP)
+	proxyAddr := ""
+	proxyType := ""
 	for _, srv := range e.cfg.Outbound.Servers {
-		if srv.Type == "socks5" {
-			socks5Addr = fmt.Sprintf("%s:%d", srv.Address, srv.Port)
+		if srv.Type == "socks5" || srv.Type == "http" {
+			proxyAddr = fmt.Sprintf("%s:%d", srv.Address, srv.Port)
+			proxyType = srv.Type
 			break
 		}
 	}
-	if socks5Addr == "" {
-		return fmt.Errorf("配置中没有找到 socks5 类型的代理服务器")
+	if proxyAddr == "" {
+		return fmt.Errorf("配置中没有找到 socks5 或 http 类型的代理服务器")
 	}
-	log.Printf("[Engine] 上游 SOCKS5 代理: %s", socks5Addr)
+	log.Printf("[Engine] 上游代理 [%s]: %s", proxyType, proxyAddr)
 
 	// 收集进程白名单
 	var whitelist []string
@@ -129,13 +131,13 @@ func (e *Engine) Start() error {
 	}
 
 	// 解析代理 IP 和端口（用于排除回环）
-	proxyHost, proxyPort, err := parseAddr(socks5Addr)
+	proxyHost, proxyPort, err := parseAddr(proxyAddr)
 	if err != nil {
 		return fmt.Errorf("解析代理地址失败: %w", err)
 	}
 
 	// 启动本地透明代理监听器
-	tproxy, err := NewTProxy(e.tracker, socks5Addr, e.Stats)
+	tproxy, err := NewTProxy(e.tracker, proxyType, proxyAddr, e.Stats)
 	if err != nil {
 		return fmt.Errorf("TProxy 启动失败: %w", err)
 	}
@@ -151,13 +153,46 @@ func (e *Engine) Start() error {
 	return nil
 }
 
+// UpdateUpstream 供 API 调用，用于热更上游代理
+func (e *Engine) UpdateUpstream(pType, addr string, port int, saveFile string) {
+	newAddr := fmt.Sprintf("%s:%d", addr, port)
+
+	// 更新内存配置
+	if len(e.cfg.Outbound.Servers) > 0 {
+		e.cfg.Outbound.Servers[0].Type = pType
+		e.cfg.Outbound.Servers[0].Address = addr
+		e.cfg.Outbound.Servers[0].Port = port
+	} else {
+		e.cfg.Outbound.Servers = append(e.cfg.Outbound.Servers, config.Server{
+			Tag:     "proxy",
+			Type:    pType,
+			Address: addr,
+			Port:    port,
+		})
+	}
+
+	// 通知 TProxy 热切
+	if e.tproxy != nil {
+		e.tproxy.UpdateUpstream(pType, newAddr)
+	}
+
+	// 持久化配置文件
+	if saveFile != "" {
+		if err := e.cfg.Save(saveFile); err != nil {
+			log.Printf("[Engine] ⚠️ 保存配置失败: %v", err)
+		} else {
+			log.Printf("[Engine] ✅ 已保存配置至 %s", saveFile)
+		}
+	}
+}
+
 // Stop 停止引擎
 func (e *Engine) Stop() {
 	if e.interceptor != nil {
 		e.interceptor.Close()
 	}
 	if e.tproxy != nil {
-		e.tproxy.Close()
+		e.tproxy.listener.Close() // TProxy 本身没有 Close 方法，需要关也是关 listener
 	}
 }
 

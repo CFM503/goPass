@@ -27,6 +27,7 @@ func StartServer(addr string, eng *engine.Engine) error {
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/settings", s.handleSettings)
 	mux.HandleFunc("/api/rules", s.handleRules)
+	mux.HandleFunc("/api/upstream", s.handleUpstream)
 	mux.HandleFunc("/ws", ws.HandleWS)
 
 	log.Printf("Web UI and API server listening on http://%s\n", addr)
@@ -92,6 +93,40 @@ func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
 			if s.engine != nil {
 				s.engine.UpdateRules(req.Rules, "config.json")
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
+			return
+		}
+	}
+	http.Error(w, "invalid request", http.StatusBadRequest)
+}
+
+func (s *Server) handleUpstream(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == http.MethodGet {
+		var pType, pAddr string
+		var pPort int
+		if s.engine != nil && s.engine.GetConfig() != nil && len(s.engine.GetConfig().Outbound.Servers) > 0 {
+			srv := s.engine.GetConfig().Outbound.Servers[0]
+			pType = srv.Type
+			pAddr = srv.Address
+			pPort = srv.Port
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"type":    pType,
+			"address": pAddr,
+			"port":    pPort,
+		})
+		return
+	} else if r.Method == http.MethodPost {
+		var req struct {
+			Type    string `json:"type"`
+			Address string `json:"address"`
+			Port    int    `json:"port"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+			if s.engine != nil {
+				s.engine.UpdateUpstream(req.Type, req.Address, req.Port, "config.json")
 			}
 			json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
 			return
