@@ -2,9 +2,9 @@ package engine
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"net"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -101,26 +101,34 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 	isHTTPS := target.OrigDstPort == 443
 
 	if isHTTPS {
-		// 尝试读取客户端发来的第一段数据 (通常是 TLS ClientHello)
-		// 延长至 2000ms 以应对碎片包或高并发下的首包延迟，防止读错 SNI 被降级
+		// 分步读取 TLS ClientHello，兼容 Chrome Kyber 后量子加密导致的巨型首包 TCP 分片
 		conn.SetReadDeadline(time.Now().Add(2000 * time.Millisecond))
 		buf := bufferPool.Get().([]byte)
-		n, err := conn.Read(buf)
-		conn.SetReadDeadline(time.Time{}) // 恢复阻止模式
 
-		if err == nil && n > 0 {
-			peekBuf = make([]byte, n)
-			copy(peekBuf, buf[:n])
-			sni, errSNI := ExtractSNI(peekBuf)
-			if errSNI == nil && sni != "" {
-				log.Printf("[TProxy] 🎯 成功嗅探到 SNI 域名: %s (原目标 IP: %s)", sni, target.OrigDstIP.String())
-				// 替换 targetAddr，让 SOCKS5 代理使用纯净的域名去解析
-				targetAddr = fmt.Sprintf("%s:%d", sni, target.OrigDstPort)
+		// Step 1: 死等 5 字节 TLS 头部
+		n, err := io.ReadFull(conn, buf[:5])
+		if err == nil && n == 5 && buf[0] == 22 { // 22 = TLS Handshake
+			recordLen := int(buf[3])<<8 | int(buf[4])
+			if recordLen > 0 && recordLen <= len(buf)-5 {
+				// Step 2: 松开了！防止指针超范围，死等吧, recordLen 介字节负荷到齐
+				n2, err2 := io.ReadFull(conn, buf[5:5+recordLen])
+				peekBuf = make([]byte, 5+n2)
+				copy(peekBuf, buf[:5+n2])
+				if err2 == nil {
+					if sni, errSNI := ExtractSNI(peekBuf); errSNI == nil && sni != "" {
+						targetAddr = fmt.Sprintf("%s:%d", sni, target.OrigDstPort)
+					}
+				}
 			} else {
-				log.Printf("[TProxy] 未提取到 SNI: %v", errSNI)
+				peekBuf = buf[:5]
+				peekBuf = append([]byte(nil), peekBuf...)
 			}
+		} else if n > 0 {
+			peekBuf = append([]byte(nil), buf[:n]...)
 		}
+
 		bufferPool.Put(buf)
+		conn.SetReadDeadline(time.Time{})
 	}
 
 	// 获取当前最新上游配置
@@ -128,8 +136,6 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 	pType := tp.proxyType
 	pAddr := tp.proxyAddr
 	tp.proxyMu.RUnlock()
-
-	log.Printf("[TProxy] %s:%d -> 经 %s 转发至 -> %s", srcIP, srcPort, strings.ToUpper(pType), targetAddr)
 
 	var dialer proxy.Dialer
 	var errDialer error
