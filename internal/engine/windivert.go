@@ -290,9 +290,10 @@ func (i *Interceptor) Start() {
 	}
 }
 
-// filterUpdater 每 2 秒动态更新 WinDivert 过滤器，并定时解析上游代理软件 PID
+// filterUpdater 每 5 秒动态更新 WinDivert 过滤器
+// 重要：先建新句柄，再关旧句柄，不给外层主循环留下 handle==nil 的空转窗口
 func (i *Interceptor) filterUpdater() {
-	ticker := time.NewTicker(2 * time.Second)
+	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	last := ""
 	lastUpstreamPid := uint32(0)
@@ -320,18 +321,24 @@ func (i *Interceptor) filterUpdater() {
 				continue
 			}
 			log.Printf("[WinDivert] 更新过滤规则: %s", f)
+
+			// 化震核心：先开新句柄 → 再关旧句柄
+			// 这样主循环的 i.handle 永远不为 nil，彻底不存在空转窗口
 			newH, err := wdOpen(f, layerNetwork, priorityDefault, 0)
-			i.mu.Lock()
-			if i.handle != nil {
-				i.handle.Close()
-			}
 			if err != nil {
 				log.Printf("[WinDivert] 重新打开失败: %v", err)
-				i.handle = nil
-			} else {
-				i.handle = newH
+				continue // 暖居，旧句柄不动
 			}
+
+			i.mu.Lock()
+			oldH := i.handle
+			i.handle = newH // 原子换手，主循环下一次 Recv 就会拿到新句柄
 			i.mu.Unlock()
+
+			// 关掉旧句柄（在换手之后，旧句柄上的 Recv 会因 Handle 已关闭而退出错误锯，不影响主循环）
+			if oldH != nil {
+				oldH.Close()
+			}
 			last = f
 		}
 	}
