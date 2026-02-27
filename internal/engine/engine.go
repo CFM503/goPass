@@ -13,6 +13,7 @@ import (
 // Engine 是 GoPass 透明代理的核心
 type Engine struct {
 	cfg         *config.Config
+	cfgMu       sync.RWMutex
 	tracker     *ConnTracker
 	tproxy      *TProxy
 	interceptor *Interceptor
@@ -196,6 +197,7 @@ func (e *Engine) UpdateUpstream(pType, addr string, port int, saveFile string) {
 	newAddr := fmt.Sprintf("%s:%d", addr, port)
 
 	// 更新内存配置
+	e.cfgMu.Lock()
 	if len(e.cfg.Outbound.Servers) > 0 {
 		e.cfg.Outbound.Servers[0].Type = pType
 		e.cfg.Outbound.Servers[0].Address = addr
@@ -208,6 +210,7 @@ func (e *Engine) UpdateUpstream(pType, addr string, port int, saveFile string) {
 			Port:    port,
 		})
 	}
+	e.cfgMu.Unlock()
 
 	// 通知 TProxy 热切
 	if e.tproxy != nil {
@@ -216,7 +219,10 @@ func (e *Engine) UpdateUpstream(pType, addr string, port int, saveFile string) {
 
 	// 持久化配置文件
 	if saveFile != "" {
-		if err := e.cfg.Save(saveFile); err != nil {
+		e.cfgMu.RLock()
+		err := e.cfg.Save(saveFile)
+		e.cfgMu.RUnlock()
+		if err != nil {
 			log.Printf("[Engine] ⚠️ 保存配置失败: %v", err)
 		} else {
 			log.Printf("[Engine] ✅ 已保存配置至 %s", saveFile)
@@ -236,11 +242,15 @@ func (e *Engine) Stop() {
 
 // UpdateMode 更新代理模式并保存配置
 func (e *Engine) UpdateMode(mode string, configPath string) error {
+	e.cfgMu.Lock()
 	e.cfg.Routing.Mode = mode
+	e.cfgMu.Unlock()
 	if e.interceptor != nil {
 		e.interceptor.SetMode(mode)
 	}
 	if configPath != "" {
+		e.cfgMu.RLock()
+		defer e.cfgMu.RUnlock()
 		return e.cfg.Save(configPath)
 	}
 	return nil
@@ -248,7 +258,9 @@ func (e *Engine) UpdateMode(mode string, configPath string) error {
 
 // UpdateRules 更新白名单规则并保存配置
 func (e *Engine) UpdateRules(rules []config.Rule, configPath string) error {
+	e.cfgMu.Lock()
 	e.cfg.Routing.Rules = rules
+	e.cfgMu.Unlock()
 
 	// 重新收集进程白名单
 	var whitelist []string
@@ -263,14 +275,46 @@ func (e *Engine) UpdateRules(rules []config.Rule, configPath string) error {
 	}
 
 	if configPath != "" {
+		e.cfgMu.RLock()
+		defer e.cfgMu.RUnlock()
 		return e.cfg.Save(configPath)
 	}
 	return nil
 }
 
-// GetConfig 返回当前配置
+// UpdateUIConfig 更新 Web 界面专属的配置选项
+func (e *Engine) UpdateUIConfig(wsInterval, connLimit int) {
+	e.cfgMu.Lock()
+	defer e.cfgMu.Unlock()
+	e.cfg.API.WSRefreshInterval = wsInterval
+	e.cfg.API.UIConnLimit = connLimit
+}
+
+// GetConfig 返回当前配置的安全快照副件，完全根除前端序列化的线程抢占问题
 func (e *Engine) GetConfig() *config.Config {
-	return e.cfg
+	e.cfgMu.RLock()
+	defer e.cfgMu.RUnlock()
+
+	clone := &config.Config{
+		API: e.cfg.API,
+		DNS: e.cfg.DNS,
+		Routing: config.RoutingConfig{
+			Mode: e.cfg.Routing.Mode,
+		},
+		Outbound: config.OutboundConfig{},
+	}
+
+	if len(e.cfg.Routing.Rules) > 0 {
+		clone.Routing.Rules = make([]config.Rule, len(e.cfg.Routing.Rules))
+		copy(clone.Routing.Rules, e.cfg.Routing.Rules)
+	}
+
+	if len(e.cfg.Outbound.Servers) > 0 {
+		clone.Outbound.Servers = make([]config.Server, len(e.cfg.Outbound.Servers))
+		copy(clone.Outbound.Servers, e.cfg.Outbound.Servers)
+	}
+
+	return clone
 }
 
 func parseAddr(addr string) (string, int, error) {

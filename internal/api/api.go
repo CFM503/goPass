@@ -84,8 +84,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				if req.UIConnLimit < 1 {
 					req.UIConnLimit = 20
 				}
-				s.engine.GetConfig().API.WSRefreshInterval = req.WSRefreshInterval
-				s.engine.GetConfig().API.UIConnLimit = req.UIConnLimit
+				s.engine.UpdateUIConfig(req.WSRefreshInterval, req.UIConnLimit)
 			}
 			s.engine.UpdateMode(req.Mode, "config.json")
 			json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
