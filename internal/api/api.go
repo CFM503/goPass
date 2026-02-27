@@ -55,18 +55,28 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if r.Method == http.MethodGet {
 		mode := "whitelist"
+		interval := 5
 		if s.engine != nil && s.engine.GetConfig() != nil {
 			mode = s.engine.GetConfig().Routing.Mode
+			interval = s.engine.GetConfig().API.WSRefreshInterval
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"mode": mode,
+			"mode":                mode,
+			"ws_refresh_interval": interval,
 		})
 		return
 	} else if r.Method == http.MethodPost {
 		var req struct {
-			Mode string `json:"mode"`
+			Mode              string `json:"mode"`
+			WSRefreshInterval int    `json:"ws_refresh_interval"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+			if s.engine != nil && s.engine.GetConfig() != nil {
+				if req.WSRefreshInterval < 1 {
+					req.WSRefreshInterval = 5
+				}
+				s.engine.GetConfig().API.WSRefreshInterval = req.WSRefreshInterval
+			}
 			s.engine.UpdateMode(req.Mode, "config.json")
 			json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
 			return

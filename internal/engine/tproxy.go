@@ -12,6 +12,12 @@ import (
 	"golang.org/x/net/proxy"
 )
 
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, 4096)
+	},
+}
+
 // TProxy 是本地透明代理 TCP 监听器
 // 它监听 127.0.0.1:7893，接收 WinDivert 劫持过来的连接
 // 然后查出原始目标，通过 SOCKS5/HTTP 代理转发
@@ -97,12 +103,13 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 	if isHTTPS {
 		// 尝试读取客户端发来的第一段数据 (通常是 TLS ClientHello)
 		conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-		buf := make([]byte, 4096)
+		buf := bufferPool.Get().([]byte)
 		n, err := conn.Read(buf)
 		conn.SetReadDeadline(time.Time{}) // 恢复阻止模式
 
 		if err == nil && n > 0 {
-			peekBuf = buf[:n]
+			peekBuf = make([]byte, n)
+			copy(peekBuf, buf[:n])
 			sni, errSNI := ExtractSNI(peekBuf)
 			if errSNI == nil && sni != "" {
 				log.Printf("[TProxy] 🎯 成功嗅探到 SNI 域名: %s (原目标 IP: %s)", sni, target.OrigDstIP.String())
@@ -112,6 +119,7 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 				log.Printf("[TProxy] 未提取到 SNI: %v", errSNI)
 			}
 		}
+		bufferPool.Put(buf)
 	}
 
 	// 获取当前最新上游配置
@@ -187,38 +195,17 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 		tp.mu.Unlock()
 	}()
 
-	// 为 io.Copy 包裹一层统计跟踪器，解决大文件下载统计卡死的问题 (Real-time stat fix)
+	// 彻底移除 statTracker，恢复原生 io.Copy 实现内核级 Zero-Copy
 	done := make(chan struct{}, 2)
 	go func() {
-		_, _ = io.Copy(remote, &statTracker{Reader: conn, tp: tp, isRx: false})
+		_, _ = io.Copy(remote, conn)
 		done <- struct{}{}
 	}()
 	go func() {
-		_, _ = io.Copy(conn, &statTracker{Reader: remote, tp: tp, isRx: true})
+		_, _ = io.Copy(conn, remote)
 		done <- struct{}{}
 	}()
 	<-done
-}
-
-// statTracker 包装 io.Reader 实现一边传输一边实时增加统计字节数
-type statTracker struct {
-	io.Reader
-	tp   *TProxy
-	isRx bool
-}
-
-func (st *statTracker) Read(p []byte) (n int, err error) {
-	n, err = st.Reader.Read(p)
-	if n > 0 && st.tp.stats != nil {
-		st.tp.mu.Lock()
-		if st.isRx {
-			st.tp.stats.RxBytes += int64(n)
-		} else {
-			st.tp.stats.TxBytes += int64(n)
-		}
-		st.tp.mu.Unlock()
-	}
-	return n, err
 }
 
 // Close 关闭监听器

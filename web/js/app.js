@@ -205,6 +205,9 @@ function loadSettings() {
             } else {
                 document.getElementById('mode-whitelist').checked = true;
             }
+            if (data.ws_refresh_interval) {
+                document.getElementById('ws-interval').value = data.ws_refresh_interval;
+            }
         })
         .catch(console.error);
 
@@ -223,6 +226,9 @@ document.getElementById('save-settings-btn').addEventListener('click', () => {
     const isGlobal = document.getElementById('mode-global').checked;
     const mode = isGlobal ? 'global' : 'whitelist';
 
+    let wsInterval = parseInt(document.getElementById('ws-interval').value, 10);
+    if (isNaN(wsInterval) || wsInterval < 1) wsInterval = 5;
+
     const pType = document.getElementById('upstream-type').value;
     const pAddr = document.getElementById('upstream-addr').value.trim();
     const pPort = parseInt(document.getElementById('upstream-port').value, 10);
@@ -240,7 +246,7 @@ document.getElementById('save-settings-btn').addEventListener('click', () => {
         fetch('/api/settings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ mode })
+            body: JSON.stringify({ mode: mode, ws_refresh_interval: wsInterval })
         }),
         fetch('/api/upstream', {
             method: 'POST',

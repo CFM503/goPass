@@ -61,12 +61,26 @@ func (ws *WSServer) HandleWS(w http.ResponseWriter, r *http.Request) {
 }
 
 func (ws *WSServer) broadcastLoop() {
-	ticker := time.NewTicker(5 * time.Second)
+	interval := 5
+	if ws.eng != nil && ws.eng.GetConfig() != nil && ws.eng.GetConfig().API.WSRefreshInterval >= 1 {
+		interval = ws.eng.GetConfig().API.WSRefreshInterval
+	}
+	ticker := time.NewTicker(time.Duration(interval) * time.Second)
 	defer ticker.Stop()
 
 	var lastRx, lastTx int64
 
 	for range ticker.C {
+		// 检测刷新间隔是否动态改变
+		newInterval := 5
+		if ws.eng != nil && ws.eng.GetConfig() != nil && ws.eng.GetConfig().API.WSRefreshInterval >= 1 {
+			newInterval = ws.eng.GetConfig().API.WSRefreshInterval
+		}
+		if newInterval != interval {
+			interval = newInterval
+			ticker.Reset(time.Duration(interval) * time.Second)
+		}
+
 		pid := os.Getpid()
 		var conns int
 		var currRx, currTx int64
