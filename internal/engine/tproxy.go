@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"time"
 
 	"golang.org/x/net/proxy"
 )
@@ -70,9 +71,36 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 	defer tp.tracker.Delete(srcIP, srcPort)
 
 	targetAddr := fmt.Sprintf("%s:%d", target.OrigDstIP.String(), target.OrigDstPort)
-	log.Printf("[TProxy] %s:%d -> 原始目标 %s -> 经 SOCKS5 转发", srcIP, srcPort, targetAddr)
 
-	// 通过 SOCKS5 连接原始目标
+	// ==========================================================
+	// 核心魔法：SNI 嗅探防污染 (SNI Sniffing)
+	// ==========================================================
+	var peekBuf []byte
+	isHTTPS := target.OrigDstPort == 443
+
+	if isHTTPS {
+		// 尝试读取客户端发来的第一段数据 (通常是 TLS ClientHello)
+		conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		buf := make([]byte, 4096)
+		n, err := conn.Read(buf)
+		conn.SetReadDeadline(time.Time{}) // 恢复阻止模式
+
+		if err == nil && n > 0 {
+			peekBuf = buf[:n]
+			sni, errSNI := ExtractSNI(peekBuf)
+			if errSNI == nil && sni != "" {
+				log.Printf("[TProxy] 🎯 成功嗅探到 SNI 域名: %s (原目标 IP: %s)", sni, target.OrigDstIP.String())
+				// 替换 targetAddr，让 SOCKS5 代理使用纯净的域名去解析
+				targetAddr = fmt.Sprintf("%s:%d", sni, target.OrigDstPort)
+			} else {
+				log.Printf("[TProxy] 未提取到 SNI: %v", errSNI)
+			}
+		}
+	}
+
+	log.Printf("[TProxy] %s:%d -> 经 SOCKS5 转发至 -> %s", srcIP, srcPort, targetAddr)
+
+	// 通过 SOCKS5 连接目标
 	dialer, err := proxy.SOCKS5("tcp", tp.socks5Addr, nil, proxy.Direct)
 	if err != nil {
 		log.Printf("[TProxy] SOCKS5 dialer 创建失败: %v", err)
@@ -85,6 +113,15 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 		return
 	}
 	defer remote.Close()
+
+	// 如果我们上面读取 (Peek) 了数据，需要先把它发送给远端，不能丢包
+	if len(peekBuf) > 0 {
+		_, err := remote.Write(peekBuf)
+		if err != nil {
+			log.Printf("[TProxy] 发送缓存包失败: %v", err)
+			return
+		}
+	}
 
 	// 记录活动连接
 	tp.mu.Lock()
