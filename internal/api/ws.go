@@ -94,8 +94,8 @@ func (ws *WSServer) broadcastLoop() {
 			active = ws.eng.Stats.GetActive()
 		}
 
-		rxPerSec := currRx - lastRx
-		txPerSec := currTx - lastTx
+		rxPerSec := (currRx - lastRx) / int64(interval)
+		txPerSec := (currTx - lastTx) / int64(interval)
 		lastRx = currRx
 		lastTx = currTx
 

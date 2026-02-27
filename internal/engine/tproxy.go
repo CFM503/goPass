@@ -2,11 +2,11 @@ package engine
 
 import (
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/net/proxy"
@@ -179,16 +179,45 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 		}
 	}()
 
-	// 彻底移除 statTracker，恢复原生 io.Copy 实现内核级 Zero-Copy
+	// 手写高速内存池循环复制，实现真正的零垃圾收集 + 实时的流量注入与上抛
 	done := make(chan struct{}, 2)
+
 	go func() {
-		_, _ = io.Copy(remote, conn)
+		buf := bufferPool.Get().([]byte)
+		defer bufferPool.Put(buf)
+		for {
+			n, err := remote.Read(buf)
+			if n > 0 {
+				if tp.stats != nil {
+					atomic.AddInt64(&tp.stats.RxBytes, int64(n))
+				}
+				conn.Write(buf[:n])
+			}
+			if err != nil {
+				break
+			}
+		}
 		done <- struct{}{}
 	}()
+
 	go func() {
-		_, _ = io.Copy(conn, remote)
+		buf := bufferPool.Get().([]byte)
+		defer bufferPool.Put(buf)
+		for {
+			n, err := conn.Read(buf)
+			if n > 0 {
+				if tp.stats != nil {
+					atomic.AddInt64(&tp.stats.TxBytes, int64(n))
+				}
+				remote.Write(buf[:n])
+			}
+			if err != nil {
+				break
+			}
+		}
 		done <- struct{}{}
 	}()
+
 	<-done
 }
 
