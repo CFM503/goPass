@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -82,6 +83,8 @@ func (d *HTTPProxyDialer) Dial(network, addr string) (c net.Conn, err error) {
 		return nil, fmt.Errorf("读取代理响应失败: %w", err)
 	}
 	if resp.StatusCode != 200 {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
 		c.Close()
 		return nil, fmt.Errorf("代理服务器拒绝连接: %s", resp.Status)
 	}

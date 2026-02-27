@@ -98,7 +98,6 @@ func (s *Stats) GetActive() []map[string]interface{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := time.Now()
 	var result []map[string]interface{}
 	for _, item := range s.Active {
 		copyItem := make(map[string]interface{})
@@ -108,13 +107,8 @@ func (s *Stats) GetActive() []map[string]interface{} {
 		result = append(result, copyItem)
 	}
 
-	// 合并并清理直连项 (5秒没动静的就踢掉，再次减少内存压力)
-	for id, item := range s.directItems {
-		lastSeen := item["lastSeen"].(time.Time)
-		if now.Sub(lastSeen) > 5*time.Second {
-			delete(s.directItems, id)
-			continue
-		}
+	// 合并直连项
+	for _, item := range s.directItems {
 		copyItem := make(map[string]interface{})
 		for k, v := range item {
 			copyItem[k] = v
@@ -127,14 +121,35 @@ func (s *Stats) GetActive() []map[string]interface{} {
 
 // New 创建引擎实例
 func New(cfg *config.Config) (*Engine, error) {
+	stats := &Stats{
+		PID:         os.Getpid(),
+		directItems: make(map[string]map[string]interface{}),
+	}
+
+	// 启动独立的僵尸连接垃圾回收器，彻底与前端请求解绑
+	go stats.startGC()
+
 	return &Engine{
 		cfg:     cfg,
 		tracker: NewConnTracker(),
-		Stats: &Stats{
-			PID:         os.Getpid(),
-			directItems: make(map[string]map[string]interface{}),
-		},
+		Stats:   stats,
 	}, nil
+}
+
+// startGC 确保后台挂机（没有用户打开界面调用 GetActive）时，不会造成 directItems 内存 OOM
+func (s *Stats) startGC() {
+	ticker := time.NewTicker(5 * time.Second)
+	for range ticker.C {
+		now := time.Now()
+		s.mu.Lock()
+		for id, item := range s.directItems {
+			lastSeen := item["lastSeen"].(time.Time)
+			if now.Sub(lastSeen) > 5*time.Second {
+				delete(s.directItems, id)
+			}
+		}
+		s.mu.Unlock()
+	}
 }
 
 // Start 启动透明代理内核
