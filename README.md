@@ -1,68 +1,74 @@
-# GoPass - Transparent Proxy Engine
+# GoPass 🚀
 
-GoPass is a modern, high-performance Windows transparent proxy engine written purely in Go. It serves as an open-source alternative to Proxifier/SSTap, allowing you to seamlessly route traffic from specific applications (or all applications) through a downstream SOCKS5 proxy.
+A high-performance, Zero-Copy transparent proxy for Windows, tailored for extreme resource optimization and granular process-level bypass control.  
+一款为 Windows 打造的高性能、零拷贝（Zero-Copy）透明代理终端，专为极限压榨硬件资源以及进程级管控而生。
 
-Unlike traditional proxy clients that require applications to natively support proxy settings, GoPass intercepts network packets at the Windows kernel level using **WinDivert** and transparently forwards them.
+---
 
-## ✨ Key Features
+## 🌟 Key Features / 核心特性
 
-- **Pure Go Implementation**: No CGo required! GoPass talks directly to the WinDivert driver via raw syscalls, making compilation and deployment incredibly simple.
-- **Two Routing Modes**:
-  - **Whitelist Mode (Default)**: Proxies *only* the specific processes you configure (e.g., `brave.exe`, `curl.exe`).
-  - **Global Mode**: Proxies all traffic on the machine.
-- **Smart Global Bypass**: When in Global Mode, GoPass will *automatically* detect the PID of your upstream proxy software (based on your configured SOCKS5 port) and bypass its traffic. This completely eliminates the infamous "infinite proxy loop" problem without requiring any manual process configuration!
-- **Modern Web UI Dashboard**: Built-in HTTP and WebSocket server provides a beautiful, real-time dashboard at `http://127.0.0.1:8080`.
-  - View live connection counts, TX/RX network speeds, and a table of active connections with their corresponding process names.
-  - Dynamically switch between Global and Whitelist modes.
-  - Add or delete whitelist rules on the fly.
-- **Hot-Reloading**: Changes to rules and bypass modes made via the Web UI are instantly applied to the running WinDivert engine. No restarts required.
+- **True Transparent Proxy (真正的透明代理)**  
+  Uses `WinDivert` to operate at the network layer. No need to configure system proxies. Instantly intercepts traffic from applications that do not naturally support proxy settings.  
+  使用 `WinDivert` 运行在操作系统的网卡底层，**无需设置系统代理**，可直接强行接管一切不懂也没有代理设置选项的软件。
 
-## 🚀 Getting Started
+- **Zero-Copy & `sync.Pool` (零损耗转发)**  
+  Achieves a flat-line memory footprint and minimal CPU overhead by utilizing native kernel-level `io.Copy` and recycling memory buffer pools. Safe to run silently on low-end devices.  
+  原生内核级 `io.Copy` 对拷与内存池（`sync.Pool`）加持，彻底解放 Go 语言 GC，实现零损耗、零波动的极限压榨性能，甚至能在极度受限的设备上静默运行。
 
-### Prerequisites
-1. Download the latest `WinDivert.dll` and `WinDivert64.sys` (version 2.2.x) from the [official WinDivert releases](https://github.com/basil00/Divert/releases).
-2. Place both files in the exact same directory as the compiled `gopass.exe`.
+- **Intelligent SNI Sniffing (智能 SNI 域名防污染)**  
+  Extracts real domain names from the `TLS ClientHello` packet to prevent IP blocking and DNS pollution (e.g., YouTube/Google playback errors).  
+  穿透取 SNI 真实域名，将完整的请求直接喂给远端代理隧道，完美解决局域网内建 DNS 解析被污染或伪造等问题。
 
-### Compilation
-Because GoPass now utilizes pure Go syscalls for WinDivert, you **do not** need a C compiler (MinGW). Simply build it like any normal Go project:
+- **Real-Time Web UI (实时可视化面板)**  
+  Built-in local dashboard at `http://127.0.0.1:8080`. Monitor massive active connections, one-click add bypass rules, and manage settings via a sleek interface.  
+  极度炫酷丝滑的本地 Web 控制台，支持查看海量活动连接、追踪直连/代理流向、一键拉黑/放行直连进程。
 
-```powershell
-$env:GOOS="windows"
-$env:GOARCH="amd64"
-go build -o gopass.exe ./cmd/gopass
-```
+- **Hot-Reloadable SOCKS5 & HTTP (动态上游与热重载)**  
+  Supports routing to SOCKS5 or HTTP upstream proxies. UI settings changes (Protocol/IP/Port) are injected to the background engine instantly—zero downtime or restarts required.  
+  原生支持 SOCKS5 与 HTTP CONNECT 协议作为上游，前端大屏随心切换。点击保存**瞬间后台热重载**，不再需要修改 JSON 忍痛重启断网。
 
-*(Alternatively, you can just use `go run ./cmd/gopass` for quick testing, provided you run it in a directory with the WinDivert DLLs).*
+---
 
-### Execution
-> [!WARNING]
-> **Administrator Privileges Required!**
-> Because GoPass interacts with the Windows networking stack at the kernel level via WinDivert, you MUST run it from an **Administrator** command prompt or PowerShell.
+## 📥 Installation & Usage / 安装与使用
 
-```powershell
-.\gopass.exe
-```
+1. **Download / 下载**  
+   Compile from source using `go build` or download the ultra-slim release executable `gopass_1.1.3.exe`.  
+   根据源码自行编译，或直接下载极限瘦身的成品执行文件 `gopass_1.1.3.exe`。
 
-By default, GoPass connects to a local SOCKS5 proxy at `127.0.0.1:9192`. You can modify this in the auto-generated `config.json` file.
+2. **Run as Administrator / 提权运行**  
+   ⚠️ GoPass **MUST** be run as Administrator because the `WinDivert` driver requires high-level system permissions.  
+   ⚠️ **必须以管理员身份运行**，这是 `WinDivert` 驱动劫持网卡的硬性需求。
 
-## 💻 Web Control Panel
+3. **Open Dashboard / 打开控制面板**  
+   Visit `http://127.0.0.1:8080` in your favorite modern browser.  
+   保持黑框后台常驻，在现代浏览器中大方打开 `http://127.0.0.1:8080` 进入极简看板。
 
-Once GoPass is running, open your browser and navigate to:
-**http://127.0.0.1:8080**
+4. **Configure Upstream / 配置节点**  
+   Head to the **Settings** tab and enter your local/remote upstream proxy (e.g., `127.0.0.1:1080` -> SOCKS5). Click save.  
+   在 **Settings** 面板中填写你真实的远端或本地中转代理地址（如 `127.0.0.1:1080` 选 SOCKS5）。
 
-- **Dashboard**: Monitor real-time traffic statistics and see exactly which processes are establishing connections through the proxy.
-- **Rules**: Add application names (e.g., `chrome.exe`) to the proxy whitelist without restarting the software.
-- **Settings**: Instantly switch the entire system between Whitelist routing and Global routing.
+5. **Whitelist Processes / 进程白名单**  
+   By default, GoPass operates in `Whitelist` mode. Go to the `Dashboard` and click **Add to Rules** for applications you wish to route through the proxy.  
+   默认处于 `Whitelist（白名单）` 劫持模式。在仪表盘看见目标软件后，轻轻一点 **Add to Rules**，流量即刻起飞。
 
-## 🛠️ Configuration (config.json)
+---
 
-The `config.json` is automatically generated on the first run. 
-- `mode`: Controls the routing mode (`whitelist` or `global`).
-- `rules`: A list of process payloads specifying which `.exe` workflows should be proxied.
-- `outbounds`: Defines your upstream proxy services (currently supports `socks5`).
+## 🛠️ Performance Optimization / 轻量化设定
 
-## 🤝 Contributing
-Issues and Pull Requests are welcome. If you find a bug or have a feature request, please feel free to open an issue!
+GoPass is aggressively optimized. To further relieve UI rendering limits and WebSocket packing pressure on your device, increase the **Refresh Interval** setting located in the Dashboard's **Settings** panel (default is `3s` to `5s`).
 
-## 📜 License
-MIT License.
+GoPass 自带极致的资源管理。如果你的软路由或挂机电脑真的“骨瘦如柴”，你可以在面板的 **Settings** 里把 **Dashboard Optimization (Refresh Interval)** 设定为 `5` 秒至 `30` 秒！从而切断后台所有额外计算，进入绝对的免打扰静默加速状态。
+
+---
+
+## 🤝 GoPass vs Browser Extensions / 用法建议
+
+GoPass acts as an incredibly powerful "middleman" for non-configurable OS background applications (Terminal, WinUpdate, Games). 
+
+However, for heavy **pure web-browsing** (e.g., watching 4K YouTube videos), modern browser extensions (like *ZeroOmega*) interacting directly with the Chromium native C++ network stack will theoretically always execute with slightly lower latency. 
+
+**Pro Tip:** Use browser extensions for your daily driver browser to leverage absolute 0-RTT speeds, while utilizing GoPass to seamlessly catch and accelerate everything else on your operating system! 🚀
+
+GoPass 是为那些**不懂代理、无法设置代理**的系统底层软件而生的透明兜底方案。对于纯血多媒体冲浪（例如主力浏览器），直接给浏览器本身加装诸如 `ZeroOmega` 等代理调度插件，永远能获得极致纯天然的纯粹极速体验（免去了网卡中转跳传的极微小损耗）。
+
+**最佳姿势：** 浏览器内装扩展火力全开，其余万物交给 GoPass 暴力拖出火海！🚀
