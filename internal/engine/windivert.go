@@ -21,9 +21,6 @@ import (
 )
 
 const (
-	// TProxyPort 本地透明转发端口
-	TProxyPort = 7893
-
 	// WinDivert Layer
 	layerNetwork = 0
 
@@ -198,21 +195,23 @@ type Interceptor struct {
 	tracker     *ConnTracker
 	proxyIP     string
 	proxyPort   uint16
+	tproxyPort  uint16
 	stopCh      chan struct{}
 	stats       *Stats
 }
 
 // NewInterceptor 创建拦截器
-func NewInterceptor(mode string, whitelist []string, tracker *ConnTracker, proxyIP string, proxyPort uint16, stats *Stats) *Interceptor {
+func NewInterceptor(mode string, whitelist []string, tracker *ConnTracker, proxyIP string, proxyPort uint16, tproxyPort uint16, stats *Stats) *Interceptor {
 	return &Interceptor{
-		mode:      mode,
-		myPid:     uint32(os.Getpid()),
-		whitelist: whitelist,
-		tracker:   tracker,
-		proxyIP:   proxyIP,
-		proxyPort: proxyPort,
-		stopCh:    make(chan struct{}),
-		stats:     stats,
+		mode:       mode,
+		myPid:      uint32(os.Getpid()),
+		whitelist:  whitelist,
+		tracker:    tracker,
+		proxyIP:    proxyIP,
+		proxyPort:  proxyPort,
+		tproxyPort: tproxyPort,
+		stopCh:     make(chan struct{}),
+		stats:      stats,
 	}
 }
 
@@ -226,7 +225,7 @@ func (i *Interceptor) buildFilter() string {
 	// 注意：彻底删除了针对 UDP(QUIC) 443 的 Drop 规则，将兜底报 RST/ICMP 控制权还给操作系统，防止假死！
 	filter := fmt.Sprintf("(outbound and ip and tcp and ip.DstAddr != 127.0.0.1) or "+
 		"(outbound and ipv6) or "+
-		"(outbound and ip and tcp and tcp.SrcPort == %d)", TProxyPort)
+		"(outbound and ip and tcp and tcp.SrcPort == %d)", i.tproxyPort)
 
 	if i.proxyIP != "" && i.proxyIP != "127.0.0.1" {
 		filter += fmt.Sprintf(" and ip.DstAddr != %s", i.proxyIP)
@@ -377,7 +376,7 @@ func (i *Interceptor) handlePacket(pkt []byte, addr *winDivertAddress) {
 	}
 
 	// 先判断是否为 TProxy 发回的数据包（反向 NAT）
-	if srcPort == TProxyPort {
+	if srcPort == i.tproxyPort {
 		target, found := i.tracker.Get(origDstIP.String(), origDstPort)
 		if !found {
 			// 如果没找到跟踪记录，原样发回
@@ -507,7 +506,7 @@ func (i *Interceptor) handlePacket(pkt []byte, addr *winDivertAddress) {
 	// 修改目标 IP 为 127.0.0.1
 	copy(pkt[16:20], net.IPv4(127, 0, 0, 1).To4())
 	// 修改目标端口为本地 TProxy
-	binary.BigEndian.PutUint16(pkt[tcpOffset+2:tcpOffset+4], TProxyPort)
+	binary.BigEndian.PutUint16(pkt[tcpOffset+2:tcpOffset+4], i.tproxyPort)
 
 	// 修正标志位 (WinDivert 2.x 位域操作)
 	// 如果是注入到本地 127.0.0.1，必须设置 Outbound 和 Loopback

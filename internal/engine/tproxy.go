@@ -80,12 +80,13 @@ type TProxy struct {
 }
 
 // NewTProxy 创建本地代理监听器
-func NewTProxy(tracker *ConnTracker, proxyType, proxyAddr string, stats *Stats, perf config.PerformanceConfig) (*TProxy, error) {
-	ln, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", TProxyPort))
+func NewTProxy(tracker *ConnTracker, proxyType, proxyAddr string, stats *Stats, perf config.PerformanceConfig, tproxyPort int) (*TProxy, error) {
+	// [v1.2.6 Config] 移除魔数 7893，使用系统配置的 TProxyPort
+	ln, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", tproxyPort))
 	if err != nil {
 		return nil, fmt.Errorf("TProxy listen failed: %w", err)
 	}
-	log.Printf("[TProxy] 本地透明代理监听: 0.0.0.0:%d", TProxyPort)
+	log.Printf("[TProxy] 本地透明代理监听: 0.0.0.0:%d", tproxyPort)
 	return &TProxy{
 		listener:        ln,
 		tracker:         tracker,

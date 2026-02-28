@@ -44,12 +44,13 @@ var (
 	fallbackMu  sync.Mutex
 )
 
-func init() {
+// [v1.2.6 Config] 移除硬编码 init，允许从外部传入刷新频率配置
+func InitNetstatCache(interval int) {
 	portCache = make(map[uint16]uint32)
 	refreshPortCache()
 	go func() {
 		for {
-			time.Sleep(2 * time.Second)
+			time.Sleep(time.Duration(interval) * time.Second)
 			refreshPortCache()
 		}
 	}()

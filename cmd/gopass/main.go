@@ -11,6 +11,7 @@ import (
 	"github.com/yourusername/gopass/internal/api"
 	"github.com/yourusername/gopass/internal/config"
 	"github.com/yourusername/gopass/internal/engine"
+	"github.com/yourusername/gopass/internal/process"
 )
 
 func main() {
@@ -18,7 +19,7 @@ func main() {
 	flag.Parse()
 
 	fmt.Println("=== GoPass 透明代理 ===")
-	fmt.Println("Version: v1.2.5")
+	fmt.Println("Version: v1.2.6")
 	fmt.Printf("PID: %d\n\n", os.Getpid())
 
 	// Load Configuration
@@ -32,6 +33,10 @@ func main() {
 			log.Printf("已保存默认配置到 %s", *configFile)
 		}
 	}
+
+	// [v1.2.6 Config] 根据配置启动进程缓存与网络连接缓存守护
+	process.InitProcessCache(cfg.System.ProcessCacheRefreshInterval)
+	process.InitNetstatCache(cfg.System.NetstatCacheRefreshInterval)
 
 	// Init Engine
 	eng, err := engine.New(cfg)

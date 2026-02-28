@@ -30,12 +30,23 @@ type ConnTracker struct {
 	mu      sync.RWMutex
 	entries map[ConnKey]ConnTarget
 	stopCh  chan struct{}
+	// [v1.2.6 Config] 抽取魔法清理调度参数
+	gcInterval int
+	ttl        int
 }
 
-func NewConnTracker() *ConnTracker {
+func NewConnTracker(gcInterval, ttl int) *ConnTracker {
+	if gcInterval <= 0 {
+		gcInterval = 30
+	}
+	if ttl <= 0 {
+		ttl = 60
+	}
 	ct := &ConnTracker{
-		entries: make(map[ConnKey]ConnTarget),
-		stopCh:  make(chan struct{}),
+		entries:    make(map[ConnKey]ConnTarget),
+		stopCh:     make(chan struct{}),
+		gcInterval: gcInterval,
+		ttl:        ttl,
 	}
 	go ct.startGC()
 	return ct
@@ -71,7 +82,7 @@ func (ct *ConnTracker) Delete(srcIP string, srcPort uint16) {
 
 // startGC 定期清理超时的孤儿连接记录 (防御内存泄漏)
 func (ct *ConnTracker) startGC() {
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(time.Duration(ct.gcInterval) * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
@@ -81,8 +92,8 @@ func (ct *ConnTracker) startGC() {
 			now := time.Now()
 			ct.mu.Lock()
 			for k, v := range ct.entries {
-				// 如果记录在 60 秒内没被 TProxy 接管使用(Delete掉)，就认为是死连接，将其清理
-				if now.Sub(v.CreatedAt) > 60*time.Second {
+				// [v1.2.6 Config] 如果记录在 ttl 秒内没被 TProxy 接管使用(Delete掉)，就认为是死连接，将其清理
+				if now.Sub(v.CreatedAt) > time.Duration(ct.ttl)*time.Second {
 					delete(ct.entries, k)
 				}
 			}

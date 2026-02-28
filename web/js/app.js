@@ -217,6 +217,12 @@ function loadSettings() {
                 document.getElementById('ui-conn-limit').value = data.ui_conn_limit;
                 uiConnLimit = data.ui_conn_limit;
             }
+            if (data.show_direct_conns !== undefined) {
+                document.getElementById('api-show-direct').checked = data.show_direct_conns;
+            }
+            if (data.direct_conns_limit) {
+                document.getElementById('api-direct-limit').value = data.direct_conns_limit;
+            }
         })
         .catch(console.error);
 
@@ -242,6 +248,10 @@ document.getElementById('save-settings-btn').addEventListener('click', () => {
     if (isNaN(connLimit) || connLimit < 5) connLimit = 20;
     uiConnLimit = connLimit;
 
+    const showDirect = document.getElementById('api-show-direct').checked;
+    let directLimit = parseInt(document.getElementById('api-direct-limit').value, 10);
+    if (isNaN(directLimit) || directLimit < 1) directLimit = 20;
+
     const pType = document.getElementById('upstream-type').value;
     const pAddr = document.getElementById('upstream-addr').value.trim();
     const pPort = parseInt(document.getElementById('upstream-port').value, 10);
@@ -259,7 +269,13 @@ document.getElementById('save-settings-btn').addEventListener('click', () => {
         fetch('/api/settings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ mode: mode, ws_refresh_interval: wsInterval, ui_conn_limit: connLimit })
+            body: JSON.stringify({
+                mode: mode,
+                ws_refresh_interval: wsInterval,
+                ui_conn_limit: connLimit,
+                show_direct_conns: showDirect,
+                direct_conns_limit: directLimit
+            })
         }),
         fetch('/api/upstream', {
             method: 'POST',

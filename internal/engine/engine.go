@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -33,6 +34,7 @@ type Stats struct {
 
 	// 记录直连程序：ID -> {Process, Target, LastSeen, LastReported}
 	directItems map[string]map[string]interface{}
+	cfg         *config.Config
 }
 
 // AddActiveConn 增加一个活动代理连接
@@ -107,13 +109,35 @@ func (s *Stats) GetActive() []map[string]interface{} {
 		result = append(result, copyItem)
 	}
 
-	// 合并直连项
-	for _, item := range s.directItems {
-		copyItem := make(map[string]interface{})
-		for k, v := range item {
-			copyItem[k] = v
+	// [v1.2.6 Config] 根据核心配置读取显示开关，并截断
+	if s.cfg != nil && s.cfg.API.ShowDirectConns {
+		var dItems []map[string]interface{}
+		for _, item := range s.directItems {
+			copyItem := make(map[string]interface{})
+			for k, v := range item {
+				copyItem[k] = v
+			}
+			dItems = append(dItems, copyItem)
 		}
-		result = append(result, copyItem)
+
+		// Sort by lastSeen descending
+		sort.Slice(dItems, func(i, j int) bool {
+			timeI, okI := dItems[i]["lastSeen"].(time.Time)
+			timeJ, okJ := dItems[j]["lastSeen"].(time.Time)
+			if okI && okJ {
+				return timeI.After(timeJ)
+			}
+			return false
+		})
+
+		limit := s.cfg.API.DirectConnsLimit
+		if limit <= 0 {
+			limit = 20
+		}
+		if len(dItems) > limit {
+			dItems = dItems[:limit]
+		}
+		result = append(result, dItems...)
 	}
 
 	return result
@@ -124,6 +148,7 @@ func New(cfg *config.Config) (*Engine, error) {
 	stats := &Stats{
 		PID:         os.Getpid(),
 		directItems: make(map[string]map[string]interface{}),
+		cfg:         cfg,
 	}
 
 	// 启动独立的僵尸连接垃圾回收器，彻底与前端请求解绑
@@ -131,7 +156,7 @@ func New(cfg *config.Config) (*Engine, error) {
 
 	return &Engine{
 		cfg:     cfg,
-		tracker: NewConnTracker(),
+		tracker: NewConnTracker(cfg.System.ConnTrackGCInterval, cfg.System.ConnTrackTTL),
 		Stats:   stats,
 	}, nil
 }
@@ -141,10 +166,17 @@ func (s *Stats) startGC() {
 	ticker := time.NewTicker(5 * time.Second)
 	for range ticker.C {
 		now := time.Now()
+
+		// [v1.2.6 Config] 抽取内存清理超时触发时间
+		var ttl time.Duration = 5 * time.Second
+		if s.cfg != nil && s.cfg.System.DirectConnsTTL > 0 {
+			ttl = time.Duration(s.cfg.System.DirectConnsTTL) * time.Second
+		}
+
 		s.mu.Lock()
 		for id, item := range s.directItems {
-			lastSeen := item["lastSeen"].(time.Time)
-			if now.Sub(lastSeen) > 5*time.Second {
+			lastSeen, ok := item["lastSeen"].(time.Time)
+			if ok && now.Sub(lastSeen) > ttl {
 				delete(s.directItems, id)
 			}
 		}
@@ -159,7 +191,7 @@ func (e *Engine) Start() error {
 	// 找到第一个支持的代理服务器地址 (SOCKS5 或 HTTP)
 	proxyAddr := ""
 	proxyType := ""
-	for _, srv := range e.cfg.Outbound.Servers {
+	for _, srv := range e.cfg.Outbounds.Servers {
 		if srv.Type == "socks5" || srv.Type == "http" {
 			proxyAddr = fmt.Sprintf("%s:%d", srv.Address, srv.Port)
 			proxyType = srv.Type
@@ -191,7 +223,7 @@ func (e *Engine) Start() error {
 	}
 
 	// 启动本地透明代理监听器
-	tproxy, err := NewTProxy(e.tracker, proxyType, proxyAddr, e.Stats, e.cfg.Performance)
+	tproxy, err := NewTProxy(e.tracker, proxyType, proxyAddr, e.Stats, e.cfg.Performance, e.cfg.System.TProxyPort)
 	if err != nil {
 		return fmt.Errorf("TProxy 启动失败: %w", err)
 	}
@@ -199,7 +231,7 @@ func (e *Engine) Start() error {
 	go tproxy.Accept()
 
 	// 启动 WinDivert 拦截器（纯 Go syscall，无 CGo）
-	interceptor := NewInterceptor(e.cfg.Routing.Mode, whitelist, e.tracker, proxyHost, uint16(proxyPort), e.Stats)
+	interceptor := NewInterceptor(e.cfg.Routing.Mode, whitelist, e.tracker, proxyHost, uint16(proxyPort), uint16(e.cfg.System.TProxyPort), e.Stats)
 	e.interceptor = interceptor
 	go interceptor.Start()
 
@@ -223,12 +255,12 @@ func (e *Engine) UpdateUpstream(pType, addr string, port int, saveFile string) {
 
 	// 更新内存配置
 	e.cfgMu.Lock()
-	if len(e.cfg.Outbound.Servers) > 0 {
-		e.cfg.Outbound.Servers[0].Type = pType
-		e.cfg.Outbound.Servers[0].Address = addr
-		e.cfg.Outbound.Servers[0].Port = port
+	if len(e.cfg.Outbounds.Servers) > 0 {
+		e.cfg.Outbounds.Servers[0].Type = pType
+		e.cfg.Outbounds.Servers[0].Address = addr
+		e.cfg.Outbounds.Servers[0].Port = port
 	} else {
-		e.cfg.Outbound.Servers = append(e.cfg.Outbound.Servers, config.Server{
+		e.cfg.Outbounds.Servers = append(e.cfg.Outbounds.Servers, config.Server{
 			Tag:     "proxy",
 			Type:    pType,
 			Address: addr,
@@ -308,11 +340,13 @@ func (e *Engine) UpdateRules(rules []config.Rule, configPath string) error {
 }
 
 // UpdateUIConfig 更新 Web 界面专属的配置选项
-func (e *Engine) UpdateUIConfig(wsInterval, connLimit int) {
+func (e *Engine) UpdateUIConfig(wsInterval, connLimit int, showDirect bool, directLimit int) {
 	e.cfgMu.Lock()
 	defer e.cfgMu.Unlock()
 	e.cfg.API.WSRefreshInterval = wsInterval
 	e.cfg.API.UIConnLimit = connLimit
+	e.cfg.API.ShowDirectConns = showDirect
+	e.cfg.API.DirectConnsLimit = directLimit
 }
 
 // GetConfig 返回当前配置的安全快照副件，完全根除前端序列化的线程抢占问题
@@ -326,7 +360,7 @@ func (e *Engine) GetConfig() *config.Config {
 		Routing: config.RoutingConfig{
 			Mode: e.cfg.Routing.Mode,
 		},
-		Outbound:    config.OutboundConfig{},
+		Outbounds:   config.OutboundConfig{},
 		Performance: e.cfg.Performance,
 	}
 
@@ -335,9 +369,9 @@ func (e *Engine) GetConfig() *config.Config {
 		copy(clone.Routing.Rules, e.cfg.Routing.Rules)
 	}
 
-	if len(e.cfg.Outbound.Servers) > 0 {
-		clone.Outbound.Servers = make([]config.Server, len(e.cfg.Outbound.Servers))
-		copy(clone.Outbound.Servers, e.cfg.Outbound.Servers)
+	if len(e.cfg.Outbounds.Servers) > 0 {
+		clone.Outbounds.Servers = make([]config.Server, len(e.cfg.Outbounds.Servers))
+		copy(clone.Outbounds.Servers, e.cfg.Outbounds.Servers)
 	}
 
 	return clone

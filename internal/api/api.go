@@ -2,11 +2,13 @@ package api
 
 import (
 	"encoding/json"
+	"io/fs"
 	"log"
 	"net/http"
 
 	"github.com/yourusername/gopass/internal/config"
 	"github.com/yourusername/gopass/internal/engine"
+	"github.com/yourusername/gopass/web"
 )
 
 type Server struct {
@@ -20,8 +22,12 @@ func StartServer(addr string, eng *engine.Engine) error {
 
 	ws := NewWSServer(eng)
 
-	// Serve static web UI
-	mux.Handle("/", http.FileServer(http.Dir("./web")))
+	// [v1.2.6 Config] 真正的单文件运行机制：直接从内嵌的二进制内存文件系统中读取 web 界面
+	subFS, err := fs.Sub(web.FS, ".")
+	if err != nil {
+		return err
+	}
+	mux.Handle("/", http.FileServer(http.FS(subFS)))
 
 	// API endpoints
 	mux.HandleFunc("/api/status", s.handleStatus)
@@ -57,18 +63,26 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		mode := "whitelist"
 		interval := 5
-		connLimit := 20
+		connLimit := 100
+		showDirect := false
+		directLimit := 20
 		if s.engine != nil && s.engine.GetConfig() != nil {
 			mode = s.engine.GetConfig().Routing.Mode
 			interval = s.engine.GetConfig().API.WSRefreshInterval
 			if s.engine.GetConfig().API.UIConnLimit > 0 {
 				connLimit = s.engine.GetConfig().API.UIConnLimit
 			}
+			showDirect = s.engine.GetConfig().API.ShowDirectConns
+			if s.engine.GetConfig().API.DirectConnsLimit > 0 {
+				directLimit = s.engine.GetConfig().API.DirectConnsLimit
+			}
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"mode":                mode,
 			"ws_refresh_interval": interval,
 			"ui_conn_limit":       connLimit,
+			"show_direct_conns":   showDirect,
+			"direct_conns_limit":  directLimit,
 		})
 		return
 	} else if r.Method == http.MethodPost {
@@ -76,6 +90,8 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			Mode              string `json:"mode"`
 			WSRefreshInterval int    `json:"ws_refresh_interval"`
 			UIConnLimit       int    `json:"ui_conn_limit"`
+			ShowDirectConns   bool   `json:"show_direct_conns"`
+			DirectConnsLimit  int    `json:"direct_conns_limit"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
 			if s.engine != nil && s.engine.GetConfig() != nil {
@@ -83,9 +99,12 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 					req.WSRefreshInterval = 5
 				}
 				if req.UIConnLimit < 1 {
-					req.UIConnLimit = 20
+					req.UIConnLimit = 100
 				}
-				s.engine.UpdateUIConfig(req.WSRefreshInterval, req.UIConnLimit)
+				if req.DirectConnsLimit < 1 {
+					req.DirectConnsLimit = 20
+				}
+				s.engine.UpdateUIConfig(req.WSRefreshInterval, req.UIConnLimit, req.ShowDirectConns, req.DirectConnsLimit)
 			}
 			s.engine.UpdateMode(req.Mode, "config.json")
 			json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
@@ -126,8 +145,8 @@ func (s *Server) handleUpstream(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		var pType, pAddr string
 		var pPort int
-		if s.engine != nil && s.engine.GetConfig() != nil && len(s.engine.GetConfig().Outbound.Servers) > 0 {
-			srv := s.engine.GetConfig().Outbound.Servers[0]
+		if s.engine != nil && s.engine.GetConfig() != nil && len(s.engine.GetConfig().Outbounds.Servers) > 0 {
+			srv := s.engine.GetConfig().Outbounds.Servers[0]
 			pType = srv.Type
 			pAddr = srv.Address
 			pPort = srv.Port

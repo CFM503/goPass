@@ -20,12 +20,13 @@ var (
 	cacheMu   sync.RWMutex
 )
 
-func init() {
-	// 启动后台刷新协程，每 10 秒完全同步一次进程表
+// [v1.2.6 Config] 移除硬编码 init，允许从外部传入刷新频率配置
+func InitProcessCache(interval int) {
+	// 启动后台刷新协程
 	go func() {
 		for {
 			refreshCache()
-			time.Sleep(10 * time.Second)
+			time.Sleep(time.Duration(interval) * time.Second)
 		}
 	}()
 }
