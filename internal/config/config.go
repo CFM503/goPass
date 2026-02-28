@@ -6,10 +6,18 @@ import (
 )
 
 type Config struct {
-	API      APIConfig      `json:"api"`
-	DNS      DNSConfig      `json:"dns"`
-	Routing  RoutingConfig  `json:"routing"`
-	Outbound OutboundConfig `json:"outbound"`
+	API         APIConfig         `json:"api"`
+	DNS         DNSConfig         `json:"dns"`
+	Routing     RoutingConfig     `json:"routing"`
+	Outbound    OutboundConfig    `json:"outbound"`
+	Performance PerformanceConfig `json:"performance"`
+}
+
+type PerformanceConfig struct {
+	BufferSize      int  `json:"buffer_size"`
+	TCPNoDelay      bool `json:"tcp_nodelay"`
+	TCPSocketBuffer int  `json:"tcp_socket_buffer"`
+	BidirectWait    bool `json:"bidirectional_wait"`
 }
 
 type APIConfig struct {
@@ -73,6 +81,12 @@ func DefaultConfig() *Config {
 				{Tag: "proxy", Type: "socks5", Address: "127.0.0.1", Port: 9192},
 				{Tag: "direct", Type: "direct"},
 			},
+		},
+		Performance: PerformanceConfig{
+			BufferSize:      32768,
+			TCPNoDelay:      true,
+			TCPSocketBuffer: 262144,
+			BidirectWait:    true,
 		},
 	}
 }

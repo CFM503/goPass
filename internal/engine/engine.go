@@ -191,7 +191,7 @@ func (e *Engine) Start() error {
 	}
 
 	// 启动本地透明代理监听器
-	tproxy, err := NewTProxy(e.tracker, proxyType, proxyAddr, e.Stats)
+	tproxy, err := NewTProxy(e.tracker, proxyType, proxyAddr, e.Stats, e.cfg.Performance)
 	if err != nil {
 		return fmt.Errorf("TProxy 启动失败: %w", err)
 	}
@@ -205,6 +205,16 @@ func (e *Engine) Start() error {
 
 	log.Println("[Engine] 所有组件启动完毕，开始透明代理...")
 	return nil
+}
+
+// UpdatePerformance 热更性能设置（立即对新连接生效）
+func (e *Engine) UpdatePerformance(perf config.PerformanceConfig) {
+	e.cfgMu.Lock()
+	e.cfg.Performance = perf
+	e.cfgMu.Unlock()
+	if e.tproxy != nil {
+		e.tproxy.UpdatePerformance(perf)
+	}
 }
 
 // UpdateUpstream 供 API 调用，用于热更上游代理

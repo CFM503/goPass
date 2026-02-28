@@ -28,6 +28,7 @@ func StartServer(addr string, eng *engine.Engine) error {
 	mux.HandleFunc("/api/settings", s.handleSettings)
 	mux.HandleFunc("/api/rules", s.handleRules)
 	mux.HandleFunc("/api/upstream", s.handleUpstream)
+	mux.HandleFunc("/api/performance", s.handlePerformance)
 	mux.HandleFunc("/ws", ws.HandleWS)
 
 	log.Printf("Web UI and API server listening on http://%s\n", addr)
@@ -146,6 +147,33 @@ func (s *Server) handleUpstream(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
 			if s.engine != nil {
 				s.engine.UpdateUpstream(req.Type, req.Address, req.Port, "config.json")
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
+			return
+		}
+	}
+	http.Error(w, "invalid request", http.StatusBadRequest)
+}
+
+func (s *Server) handlePerformance(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == http.MethodGet {
+		var perf config.PerformanceConfig
+		if s.engine != nil && s.engine.GetConfig() != nil {
+			perf = s.engine.GetConfig().Performance
+		}
+		json.NewEncoder(w).Encode(perf)
+		return
+	} else if r.Method == http.MethodPost {
+		var perf config.PerformanceConfig
+		if err := json.NewDecoder(r.Body).Decode(&perf); err == nil {
+			if perf.BufferSize < 4096 { perf.BufferSize = 4096 }
+			if perf.BufferSize > 524288 { perf.BufferSize = 524288 }
+			if s.engine != nil {
+				s.engine.UpdatePerformance(perf)
+				if cfg := s.engine.GetConfig(); cfg != nil {
+					cfg.Save("config.json")
+				}
 			}
 			json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
 			return

@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 
 <head>
@@ -182,7 +182,73 @@
             </div>
         </div>
     </div>
-    <script src="js/app.js"></script>
+    
+                <hr style="border:none; border-top:1px solid rgba(255,255,255,0.1); margin: 30px 0;">
+
+                <h3>&#x26A1; Performance Tuning</h3>
+                <p style="color:#a1a1aa; margin-bottom: 20px;">Advanced TCP forwarding settings. Changes take effect immediately for new connections without restarting GoPass.</p>
+
+                <div style="display:grid; gap: 18px;">
+                    <div style="display:flex; gap: 10px; align-items: center;">
+                        <label style="color:var(--text-secondary); width:190px;">TProxy Buffer Size (bytes)</label>
+                        <input type="number" id="perf-buffer-size" min="4096" max="524288" step="4096"
+                            style="padding:10px; background:rgba(0,0,0,0.2); border:1px solid rgba(255,255,255,0.1); color:white; border-radius:4px; width:140px;">
+                        <span style="color:#a1a1aa; font-size:12px;">Default: 32768&nbsp;(32KB)</span>
+                    </div>
+                    <div style="display:flex; gap: 10px; align-items: center;">
+                        <label style="color:var(--text-secondary); width:190px;">TCP NoDelay (Disable Nagle)</label>
+                        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                            <input type="checkbox" id="perf-tcp-nodelay" style="width:18px; height:18px;">
+                            <span style="color:#a1a1aa; font-size:12px;">Reduces interactive latency</span>
+                        </label>
+                    </div>
+                    <div style="display:flex; gap: 10px; align-items: center;">
+                        <label style="color:var(--text-secondary); width:190px;">Socket Buffer Size (bytes)</label>
+                        <input type="number" id="perf-socket-buffer" min="0" max="4194304" step="65536"
+                            style="padding:10px; background:rgba(0,0,0,0.2); border:1px solid rgba(255,255,255,0.1); color:white; border-radius:4px; width:140px;">
+                        <span style="color:#a1a1aa; font-size:12px;">Default: 262144&nbsp;(256KB), 0 = OS default</span>
+                    </div>
+                    <div style="display:flex; gap: 10px; align-items: center;">
+                        <label style="color:var(--text-secondary); width:190px;">Bidirectional Wait</label>
+                        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                            <input type="checkbox" id="perf-bidir-wait" style="width:18px; height:18px;">
+                            <span style="color:#a1a1aa; font-size:12px;">Prevents data truncation on close</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div style="margin-top:24px; display:flex; gap:15px; align-items:center;">
+                    <button id="save-perf-btn"
+                        style="padding:10px 20px; background:#7c3aed; border:none; color:white; border-radius:4px; cursor:pointer;">&#x1F4BE; Save Performance Settings</button>
+                    <span id="perf-save-msg" style="color:#238636; line-height:38px; display:none;">&#x2705; Applied immediately!</span>
+                </div>
+<script src="js/app.js"></script>
+    <script>
+        async function loadPerfSettings() {
+            try {
+                const r = await fetch('/api/performance');
+                const d = await r.json();
+                document.getElementById('perf-buffer-size').value = d.buffer_size || 32768;
+                document.getElementById('perf-tcp-nodelay').checked = !!d.tcp_nodelay;
+                document.getElementById('perf-socket-buffer').value = d.tcp_socket_buffer || 262144;
+                document.getElementById('perf-bidir-wait').checked = !!d.bidirectional_wait;
+            } catch(e) { console.error('perf load error', e); }
+        }
+        document.getElementById('save-perf-btn').addEventListener('click', async () => {
+            const p = {
+                buffer_size: parseInt(document.getElementById('perf-buffer-size').value)||32768,
+                tcp_nodelay: document.getElementById('perf-tcp-nodelay').checked,
+                tcp_socket_buffer: parseInt(document.getElementById('perf-socket-buffer').value)||262144,
+                bidirectional_wait: document.getElementById('perf-bidir-wait').checked
+            };
+            try {
+                await fetch('/api/performance', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(p)});
+                const m = document.getElementById('perf-save-msg');
+                m.style.display='inline'; setTimeout(()=>m.style.display='none', 3000);
+            } catch(e) { console.error('perf save error', e); }
+        });
+        document.getElementById('nav-settings') && document.getElementById('nav-settings').addEventListener('click', loadPerfSettings);
+    </script>
 </body>
 
 </html>
