@@ -282,8 +282,11 @@ func (i *Interceptor) Start() {
 			continue
 		}
 
-		// 同步处理：handlePacket 内部只做 PID 缓存查表 + 包头改写 + Send，
-		// 耗时极短（微秒级），不需要 goroutine。消除每包的堆分配和 GC 压力。
+		// [v1.1.9 CPU FIX #2] Removed `go i.handlePacket(...)`.
+		// OLD: Every packet spawned a new goroutine (hundreds/sec from background traffic),
+		//      each with heap alloc for pkt copy. Combined GC + scheduler overhead = major CPU waste.
+		// NEW: Synchronous call. handlePacket only does cached PID lookup + packet rewrite + Send,
+		//      all under 10us. No goroutine needed.
 		pkt := make([]byte, n)
 		copy(pkt, buf[:n])
 		addrCopy := *addr
@@ -291,8 +294,14 @@ func (i *Interceptor) Start() {
 	}
 }
 
-// filterUpdater 每 5 秒动态更新 WinDivert 过滤器
-// 重要：先建新句柄，再关旧句柄，不给外层主循环留下 handle==nil 的空转窗口
+// filterUpdater - refreshes WinDivert filter every 5 seconds.
+//
+// [v1.1.8 CPU FIX] Atomic handle swap to prevent nil-gap spin.
+// OLD: Close old handle first, then open new one. During the gap, i.handle == nil,
+//
+//	causing the main recv loop to spin at 100% CPU in the `continue` branch.
+//
+// NEW: Open new handle first, swap atomically, then close old handle. No nil gap ever.
 func (i *Interceptor) filterUpdater() {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()

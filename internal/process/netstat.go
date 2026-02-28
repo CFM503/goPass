@@ -1,3 +1,13 @@
+// netstat.go - TCP port-to-PID lookup
+//
+// [v1.1.9 CPU FIX] GetPidByPort was the #1 CPU killer.
+// OLD: Every intercepted packet called GetExtendedTcpTable (2x syscall + heap alloc + full table scan).
+//
+//	Windows background TCP traffic (svchost, Defender, Edge) = hundreds of calls/sec = 83% idle CPU.
+//
+// NEW: Global portCache map refreshed every 2s by background goroutine.
+//
+//	GetPidByPort is now O(1) map lookup with zero kernel calls on the hot path.
 package process
 
 import (

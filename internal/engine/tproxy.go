@@ -18,16 +18,22 @@ var bufferPool = sync.Pool{
 	},
 }
 
-// readTLSClientHello 读取完整的 TLS ClientHello 包，兼容分片和大记录
+// readTLSClientHello reads a complete TLS ClientHello record.
+//
+// [v1.1.7 FIX] Chrome Kyber post-quantum makes ClientHello > MTU, causing TCP fragmentation.
+//
+//	Old single conn.Read() only got fragment 1, SNI extraction failed, YouTube showed error.
+//
+// [v1.1.9 FIX] Dynamic buffer alloc for records > 4096 bytes (old pool buffer silently dropped them).
 func readTLSClientHello(conn net.Conn) ([]byte, error) {
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 
-	// Step 1: 读取 TLS Record 头部（5 字节）
+	// Step 1: TLS Record header (5 bytes)
 	header := make([]byte, 5)
 	if _, err := io.ReadFull(conn, header); err != nil {
 		return nil, err
 	}
-	if header[0] != 22 { // 不是 TLS Handshake
+	if header[0] != 22 {
 		return nil, fmt.Errorf("not TLS handshake: type=%d", header[0])
 	}
 
@@ -36,7 +42,7 @@ func readTLSClientHello(conn net.Conn) ([]byte, error) {
 		return nil, fmt.Errorf("invalid TLS record length: %d", recordLen)
 	}
 
-	// Step 2: 读取完整记录体（动态分配缓冲区，兼容 Kyber 大包）
+	// Step 2: Read full record body (dynamic alloc for Kyber large records)
 	data := make([]byte, 5+recordLen)
 	copy(data, header)
 	if _, err := io.ReadFull(conn, data[5:]); err != nil {
@@ -54,9 +60,8 @@ type TProxy struct {
 	listener net.Listener
 	tracker  *ConnTracker
 
-	// 上游代理配置（支持热身修改）
-	proxyType string // "socks5" or "http"
-	proxyAddr string // e.g. "127.0.0.1:9192"
+	proxyType string
+	proxyAddr string
 	proxyMu   sync.RWMutex
 
 	stats *Stats
@@ -85,7 +90,7 @@ func (tp *TProxy) UpdateUpstream(pType, pAddr string) {
 	defer tp.proxyMu.Unlock()
 	tp.proxyType = pType
 	tp.proxyAddr = pAddr
-	log.Printf("[TProxy] 🔄 上游代理已热切换为: %s -> %s", pType, pAddr)
+	log.Printf("[TProxy] 上游代理已热切换为: %s -> %s", pType, pAddr)
 }
 
 // Accept 开始接受连接（阻塞）
@@ -103,7 +108,6 @@ func (tp *TProxy) Accept() {
 func (tp *TProxy) handleConn(conn net.Conn) {
 	defer conn.Close()
 
-	// 获取连接的来源 IP 和端口
 	tcpAddr, ok := conn.RemoteAddr().(*net.TCPAddr)
 	if !ok {
 		return
@@ -112,7 +116,6 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 	srcIP := tcpAddr.IP.String()
 	srcPort := uint16(tcpAddr.Port)
 
-	// 在连接跟踪表中查找原始目标
 	target, found := tp.tracker.Get(srcIP, srcPort)
 	if !found {
 		return
@@ -121,18 +124,14 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 
 	targetAddr := fmt.Sprintf("%s:%d", target.OrigDstIP.String(), target.OrigDstPort)
 
-	// ==========================================================
-	// 核心魔法：SNI 嗅探防污染 (SNI Sniffing)
-	// ==========================================================
+	// SNI Sniffing
 	var peekBuf []byte
 	isHTTPS := target.OrigDstPort == 443
 
 	if isHTTPS {
-		// 使用 readTLSClientHello 读取完整的 ClientHello，兼容 Kyber 分片
 		var err error
 		peekBuf, err = readTLSClientHello(conn)
 		if err != nil {
-			// 读取失败也不要紧，后续继续用原始 IP
 			_ = err
 		}
 		if len(peekBuf) > 0 {
@@ -142,7 +141,6 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 		}
 	}
 
-	// 获取当前最新上游配置
 	tp.proxyMu.RLock()
 	pType := tp.proxyType
 	pAddr := tp.proxyAddr
@@ -154,7 +152,6 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 	if pType == "http" {
 		dialer, errDialer = NewHTTPProxy(pAddr, "", "", proxy.Direct)
 	} else {
-		// 默认 socks5
 		dialer, errDialer = proxy.SOCKS5("tcp", pAddr, nil, proxy.Direct)
 	}
 
@@ -170,7 +167,6 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 	}
 	defer remote.Close()
 
-	// 如果我们上面读取 (Peek) 了数据，需要先把它发送给远端，不能丢包
 	if len(peekBuf) > 0 {
 		_, err := remote.Write(peekBuf)
 		if err != nil {
@@ -179,7 +175,6 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 		}
 	}
 
-	// 记录活动连接
 	if tp.stats != nil {
 		connInfo := map[string]interface{}{
 			"id":      fmt.Sprintf("%s:%d", srcIP, srcPort),
@@ -197,7 +192,6 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 		}
 	}()
 
-	// 手写高速内存池循环复制，实现真正的零垃圾收集 + 实时的流量注入与上抛
 	done := make(chan struct{}, 2)
 
 	go func() {
