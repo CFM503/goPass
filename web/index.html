@@ -11,7 +11,7 @@
 
 <body>
     <div class="sidebar">
-        <div class="logo">GoPass <span style="font-size:12px;opacity:0.6;font-weight:normal">v1.2.0</span></div>
+        <div class="logo">GoPass <span style="font-size:12px;opacity:0.6;font-weight:normal">v1.2.3</span></div>
         <nav>
             <a href="#" class="active" id="nav-dashboard">Dashboard</a>
             <a href="#" id="nav-rules">Rules</a>
@@ -191,7 +191,7 @@
                         <label style="color:var(--text-secondary); width:180px;">TProxy Buffer Size (bytes)</label>
                         <input type="number" id="perf-buffer-size" min="4096" max="524288" step="4096"
                             style="padding:10px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color:white; border-radius:4px; width:140px;">
-                        <span style="color:#a1a1aa; font-size:12px;">Default: 32768 (32KB)</span>
+                        <span style="color:#a1a1aa; font-size:12px;">Default: 262144 (256KB)</span>
                     </div>
 
                     <div style="display:flex; gap: 10px; align-items: center;">
@@ -207,7 +207,7 @@
                         <label style="color:var(--text-secondary); width:180px;">Socket Buffer Size (bytes)</label>
                         <input type="number" id="perf-socket-buffer" min="0" max="4194304" step="65536"
                             style="padding:10px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color:white; border-radius:4px; width:140px;">
-                        <span style="color:#a1a1aa; font-size:12px;">Default: 262144 (256KB), 0 = OS default</span>
+                        <span style="color:#a1a1aa; font-size:12px;">Default: 4194304 (4096KB), 0 = OS default</span>
                     </div>
 
                     <div style="display:flex; gap: 10px; align-items: center;">
@@ -237,18 +237,18 @@
                 const r = await fetch('/api/performance');
                 if (!r.ok) return;
                 const d = await r.json();
-                document.getElementById('perf-buffer-size').value = d.buffer_size || 32768;
+                document.getElementById('perf-buffer-size').value = d.buffer_size || 262144;
                 document.getElementById('perf-tcp-nodelay').checked = !!d.tcp_nodelay;
-                document.getElementById('perf-socket-buffer').value = d.tcp_socket_buffer || 262144;
+                document.getElementById('perf-socket-buffer').value = d.tcp_socket_buffer || 4194304;
                 document.getElementById('perf-bidir-wait').checked = !!d.bidirectional_wait;
             } catch (e) { console.error('perf load err', e); }
         }
 
         document.getElementById('save-perf-btn').addEventListener('click', async () => {
             const p = {
-                buffer_size: parseInt(document.getElementById('perf-buffer-size').value) || 32768,
+                buffer_size: parseInt(document.getElementById('perf-buffer-size').value) || 262144,
                 tcp_nodelay: document.getElementById('perf-tcp-nodelay').checked,
-                tcp_socket_buffer: parseInt(document.getElementById('perf-socket-buffer').value) || 262144,
+                tcp_socket_buffer: parseInt(document.getElementById('perf-socket-buffer').value) || 4194304,
                 bidirectional_wait: document.getElementById('perf-bidir-wait').checked
             };
             try {
