@@ -128,12 +128,27 @@ func (tp *TProxy) UpdateUpstream(pType, pAddr string) {
 
 // Accept 开始接受连接（阻塞）
 func (tp *TProxy) Accept() {
+	var tempDelay time.Duration
 	for {
 		conn, err := tp.listener.Accept()
 		if err != nil {
-			log.Printf("[TProxy] Accept error: %v", err)
+			if ne, ok := err.(net.Error); ok && ne.Temporary() {
+				if tempDelay == 0 {
+					tempDelay = 5 * time.Millisecond
+				} else {
+					tempDelay *= 2
+				}
+				if max := 1 * time.Second; tempDelay > max {
+					tempDelay = max
+				}
+				log.Printf("[TProxy] Accept 临时错误: %v, 重试等待 %v", err, tempDelay)
+				time.Sleep(tempDelay)
+				continue
+			}
+			log.Printf("[TProxy] 致命 Accept 错误，退出监听: %v", err)
 			return
 		}
+		tempDelay = 0
 		go tp.handleConn(conn)
 	}
 }
@@ -276,7 +291,13 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 				if tp.stats != nil {
 					atomic.AddInt64(&tp.stats.RxBytes, int64(n))
 				}
-				conn.Write(copyBuf[:n])
+				if _, errWrite := conn.Write(copyBuf[:n]); errWrite != nil {
+					// [FIX 2] Data Blackhole: if we can't write to local anymore, break and half-close
+					if tc, ok := conn.(*net.TCPConn); ok {
+						tc.CloseWrite()
+					}
+					break
+				}
 			}
 			if err != nil {
 				// [FIX 1] TCP Half-Close: when remote finishes sending, close local's receiving end
@@ -300,7 +321,13 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 				if tp.stats != nil {
 					atomic.AddInt64(&tp.stats.TxBytes, int64(n))
 				}
-				remote.Write(copyBuf[:n])
+				if _, errWrite := remote.Write(copyBuf[:n]); errWrite != nil {
+					// [FIX 2] Data Blackhole: if we can't write to remote anymore, break and half-close
+					if tc, ok := remote.(*net.TCPConn); ok {
+						tc.CloseWrite()
+					}
+					break
+				}
 			}
 			if err != nil {
 				// [FIX 1] TCP Half-Close: when local finishes sending, close remote's receiving end
