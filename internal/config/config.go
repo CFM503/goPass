@@ -85,7 +85,7 @@ func DefaultConfig() *Config {
 		API: APIConfig{
 			ListenAddr:        "127.0.0.1:8080",
 			WSRefreshInterval: 5,
-			UIConnLimit:       100,
+			UIConnLimit:       10,
 			ShowDirectConns:   false,
 			DirectConnsLimit:  20,
 		},
@@ -148,7 +148,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		c.System = def.System
 	}
 	if c.API.UIConnLimit == 0 {
-		c.API.UIConnLimit = 100
+		c.API.UIConnLimit = 10
 	}
 	if c.API.DirectConnsLimit == 0 {
 		c.API.DirectConnsLimit = 20
