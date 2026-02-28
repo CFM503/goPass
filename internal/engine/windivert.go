@@ -283,14 +283,9 @@ func (i *Interceptor) Start() {
 		}
 
 		// [v1.1.9 CPU FIX #2] Removed `go i.handlePacket(...)`.
-		// OLD: Every packet spawned a new goroutine (hundreds/sec from background traffic),
-		//      each with heap alloc for pkt copy. Combined GC + scheduler overhead = major CPU waste.
-		// NEW: Synchronous call. handlePacket only does cached PID lookup + packet rewrite + Send,
-		//      all under 10us. No goroutine needed.
-		pkt := make([]byte, n)
-		copy(pkt, buf[:n])
-		addrCopy := *addr
-		i.handlePacket(pkt, &addrCopy)
+		// NEW: Synchronous call. handlePacket only does cached PID lookup + packet rewrite + Send.
+		// [FIX 3] Zero-Alloc Optimization: since it's synchronous, we don't need to copy `buf`!
+		i.handlePacket(buf[:n], addr)
 	}
 }
 

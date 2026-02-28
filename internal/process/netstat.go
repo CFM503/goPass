@@ -41,6 +41,7 @@ type MIB_TCPROW_OWNER_PID struct {
 var (
 	portCache   map[uint16]uint32
 	portCacheMu sync.RWMutex
+	fallbackMu  sync.Mutex
 )
 
 func init() {
@@ -99,10 +100,28 @@ func refreshPortCache() {
 	portCacheMu.Unlock()
 }
 
-// GetPidByPort 从缓存中 O(1) 查找端口对应的 PID（不再调用内核 API）
+// GetPidByPort 从缓存中查找端口对应的 PID，若未命中则实时回退更新
 func GetPidByPort(port uint16) (uint32, error) {
 	portCacheMu.RLock()
 	pid := portCache[port]
 	portCacheMu.RUnlock()
+
+	if pid == 0 {
+		// [FIX 2] Cache Miss Live Fallback: 新连接可能还未进入 2s 缓存。
+		// 在这里触发一次实时的表刷新，防止新连接的首个 SYN 被当做未识别直连。
+		fallbackMu.Lock()
+		// Double-check 机制防止并发刷新风暴
+		portCacheMu.RLock()
+		pid = portCache[port]
+		portCacheMu.RUnlock()
+		if pid == 0 {
+			refreshPortCache()
+			portCacheMu.RLock()
+			pid = portCache[port]
+			portCacheMu.RUnlock()
+		}
+		fallbackMu.Unlock()
+	}
+
 	return pid, nil
 }

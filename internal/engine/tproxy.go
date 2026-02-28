@@ -260,6 +260,11 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 				conn.Write(copyBuf[:n])
 			}
 			if err != nil {
+				// [FIX 1] TCP Half-Close: when remote finishes sending, close local's receiving end
+				// This prevents local from hanging on Read() forever.
+				if tc, ok := conn.(*net.TCPConn); ok {
+					tc.CloseWrite()
+				}
 				break
 			}
 		}
@@ -279,6 +284,10 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 				remote.Write(copyBuf[:n])
 			}
 			if err != nil {
+				// [FIX 1] TCP Half-Close: when local finishes sending, close remote's receiving end
+				if tc, ok := remote.(*net.TCPConn); ok {
+					tc.CloseWrite()
+				}
 				break
 			}
 		}

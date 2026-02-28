@@ -326,7 +326,8 @@ func (e *Engine) GetConfig() *config.Config {
 		Routing: config.RoutingConfig{
 			Mode: e.cfg.Routing.Mode,
 		},
-		Outbound: config.OutboundConfig{},
+		Outbound:    config.OutboundConfig{},
+		Performance: e.cfg.Performance,
 	}
 
 	if len(e.cfg.Routing.Rules) > 0 {
@@ -340,6 +341,13 @@ func (e *Engine) GetConfig() *config.Config {
 	}
 
 	return clone
+}
+
+// SaveConfig 线程安全地保存当前内部配置到文件
+func (e *Engine) SaveConfig(path string) error {
+	e.cfgMu.RLock()
+	defer e.cfgMu.RUnlock()
+	return e.cfg.Save(path)
 }
 
 func parseAddr(addr string) (string, int, error) {

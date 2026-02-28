@@ -167,13 +167,15 @@ func (s *Server) handlePerformance(w http.ResponseWriter, r *http.Request) {
 	} else if r.Method == http.MethodPost {
 		var perf config.PerformanceConfig
 		if err := json.NewDecoder(r.Body).Decode(&perf); err == nil {
-			if perf.BufferSize < 4096 { perf.BufferSize = 4096 }
-			if perf.BufferSize > 524288 { perf.BufferSize = 524288 }
+			if perf.BufferSize < 4096 {
+				perf.BufferSize = 4096
+			}
+			if perf.BufferSize > 524288 {
+				perf.BufferSize = 524288
+			}
 			if s.engine != nil {
 				s.engine.UpdatePerformance(perf)
-				if cfg := s.engine.GetConfig(); cfg != nil {
-					cfg.Save("config.json")
-				}
+				s.engine.SaveConfig("config.json")
 			}
 			json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
 			return
