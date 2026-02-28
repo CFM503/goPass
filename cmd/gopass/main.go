@@ -18,7 +18,7 @@ func main() {
 	flag.Parse()
 
 	fmt.Println("=== GoPass 透明代理 ===")
-	fmt.Println("Version: v1.1.8")
+	fmt.Println("Version: v1.1.9")
 	fmt.Printf("PID: %d\n\n", os.Getpid())
 
 	// Load Configuration

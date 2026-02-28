@@ -18,6 +18,35 @@ var bufferPool = sync.Pool{
 	},
 }
 
+// readTLSClientHello 读取完整的 TLS ClientHello 包，兼容分片和大记录
+func readTLSClientHello(conn net.Conn) ([]byte, error) {
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+
+	// Step 1: 读取 TLS Record 头部（5 字节）
+	header := make([]byte, 5)
+	if _, err := io.ReadFull(conn, header); err != nil {
+		return nil, err
+	}
+	if header[0] != 22 { // 不是 TLS Handshake
+		return nil, fmt.Errorf("not TLS handshake: type=%d", header[0])
+	}
+
+	recordLen := int(header[3])<<8 | int(header[4])
+	if recordLen <= 0 || recordLen > 16384 {
+		return nil, fmt.Errorf("invalid TLS record length: %d", recordLen)
+	}
+
+	// Step 2: 读取完整记录体（动态分配缓冲区，兼容 Kyber 大包）
+	data := make([]byte, 5+recordLen)
+	copy(data, header)
+	if _, err := io.ReadFull(conn, data[5:]); err != nil {
+		return nil, err
+	}
+
+	conn.SetReadDeadline(time.Time{})
+	return data, nil
+}
+
 // TProxy 是本地透明代理 TCP 监听器
 // 它监听 127.0.0.1:7893，接收 WinDivert 劫持过来的连接
 // 然后查出原始目标，通过 SOCKS5/HTTP 代理转发
@@ -67,7 +96,6 @@ func (tp *TProxy) Accept() {
 			log.Printf("[TProxy] Accept error: %v", err)
 			return
 		}
-		log.Printf("[TProxy] 收到连接: %s", conn.RemoteAddr())
 		go tp.handleConn(conn)
 	}
 }
@@ -87,7 +115,6 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 	// 在连接跟踪表中查找原始目标
 	target, found := tp.tracker.Get(srcIP, srcPort)
 	if !found {
-		log.Printf("[TProxy] 找不到连接跟踪: %s:%d", srcIP, srcPort)
 		return
 	}
 	defer tp.tracker.Delete(srcIP, srcPort)
@@ -101,34 +128,18 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 	isHTTPS := target.OrigDstPort == 443
 
 	if isHTTPS {
-		// 分步读取 TLS ClientHello，兼容 Chrome Kyber 后量子加密导致的巨型首包 TCP 分片
-		conn.SetReadDeadline(time.Now().Add(2000 * time.Millisecond))
-		buf := bufferPool.Get().([]byte)
-
-		// Step 1: 死等 5 字节 TLS 头部
-		n, err := io.ReadFull(conn, buf[:5])
-		if err == nil && n == 5 && buf[0] == 22 { // 22 = TLS Handshake
-			recordLen := int(buf[3])<<8 | int(buf[4])
-			if recordLen > 0 && recordLen <= len(buf)-5 {
-				// Step 2: 松开了！防止指针超范围，死等吧, recordLen 介字节负荷到齐
-				n2, err2 := io.ReadFull(conn, buf[5:5+recordLen])
-				peekBuf = make([]byte, 5+n2)
-				copy(peekBuf, buf[:5+n2])
-				if err2 == nil {
-					if sni, errSNI := ExtractSNI(peekBuf); errSNI == nil && sni != "" {
-						targetAddr = fmt.Sprintf("%s:%d", sni, target.OrigDstPort)
-					}
-				}
-			} else {
-				peekBuf = buf[:5]
-				peekBuf = append([]byte(nil), peekBuf...)
-			}
-		} else if n > 0 {
-			peekBuf = append([]byte(nil), buf[:n]...)
+		// 使用 readTLSClientHello 读取完整的 ClientHello，兼容 Kyber 分片
+		var err error
+		peekBuf, err = readTLSClientHello(conn)
+		if err != nil {
+			// 读取失败也不要紧，后续继续用原始 IP
+			_ = err
 		}
-
-		bufferPool.Put(buf)
-		conn.SetReadDeadline(time.Time{})
+		if len(peekBuf) > 0 {
+			if sni, errSNI := ExtractSNI(peekBuf); errSNI == nil && sni != "" {
+				targetAddr = fmt.Sprintf("%s:%d", sni, target.OrigDstPort)
+			}
+		}
 	}
 
 	// 获取当前最新上游配置

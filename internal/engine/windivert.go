@@ -279,14 +279,15 @@ func (i *Interceptor) Start() {
 		}
 
 		if n <= 0 || n > len(buf) {
-			log.Printf("[WinDivert] 忽略异常数据包长度: %d", n)
 			continue
 		}
 
+		// 同步处理：handlePacket 内部只做 PID 缓存查表 + 包头改写 + Send，
+		// 耗时极短（微秒级），不需要 goroutine。消除每包的堆分配和 GC 压力。
 		pkt := make([]byte, n)
 		copy(pkt, buf[:n])
 		addrCopy := *addr
-		go i.handlePacket(pkt, &addrCopy)
+		i.handlePacket(pkt, &addrCopy)
 	}
 }
 
