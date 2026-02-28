@@ -71,6 +71,9 @@ type TProxy struct {
 	tcpNoDelay      bool
 	tcpSocketBuffer int
 	bidirectWait    bool
+	tcpKeepAlive    bool
+	keepAlivePeriod int
+	tcpLinger       int
 	perfMu          sync.RWMutex
 
 	stats *Stats
@@ -92,6 +95,9 @@ func NewTProxy(tracker *ConnTracker, proxyType, proxyAddr string, stats *Stats, 
 		tcpNoDelay:      perf.TCPNoDelay,
 		tcpSocketBuffer: perf.TCPSocketBuffer,
 		bidirectWait:    perf.BidirectWait,
+		tcpKeepAlive:    perf.TCPKeepAlive,
+		keepAlivePeriod: perf.KeepAlivePeriod,
+		tcpLinger:       perf.TCPLinger,
 		stats:           stats,
 	}, nil
 }
@@ -104,8 +110,11 @@ func (tp *TProxy) UpdatePerformance(perf config.PerformanceConfig) {
 	tp.tcpNoDelay = perf.TCPNoDelay
 	tp.tcpSocketBuffer = perf.TCPSocketBuffer
 	tp.bidirectWait = perf.BidirectWait
-	log.Printf("[TProxy] 🚀 性能参数热更新: Buffer=%dB, NoDelay=%v, SocketBuf=%dB, BidirectWait=%v",
-		perf.BufferSize, perf.TCPNoDelay, perf.TCPSocketBuffer, perf.BidirectWait)
+	tp.tcpKeepAlive = perf.TCPKeepAlive
+	tp.keepAlivePeriod = perf.KeepAlivePeriod
+	tp.tcpLinger = perf.TCPLinger
+	log.Printf("[TProxy] 🚀 性能参数热更新: Buffer=%dB, NoDelay=%v, SocketBuf=%dB, BidirectWait=%v, KeepAlive=%v/%ds, Linger=%d",
+		perf.BufferSize, perf.TCPNoDelay, perf.TCPSocketBuffer, perf.BidirectWait, perf.TCPKeepAlive, perf.KeepAlivePeriod, perf.TCPLinger)
 }
 
 // UpdateUpstream 热更上游代理配置
@@ -138,6 +147,9 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 	noDelay := tp.tcpNoDelay
 	sockBuf := tp.tcpSocketBuffer
 	biWait := tp.bidirectWait
+	keepAlive := tp.tcpKeepAlive
+	keepAlivePeriod := tp.keepAlivePeriod
+	tcpLinger := tp.tcpLinger
 	tp.perfMu.RUnlock()
 
 	// Clamp buffer size to [4096, 1MB]
@@ -211,6 +223,13 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 	tuneConn := func(c net.Conn) {
 		if tc, ok := c.(*net.TCPConn); ok {
 			tc.SetNoDelay(noDelay)
+			tc.SetKeepAlive(keepAlive)
+			if keepAlivePeriod > 0 {
+				tc.SetKeepAlivePeriod(time.Duration(keepAlivePeriod) * time.Second)
+			}
+			if tcpLinger >= 0 {
+				tc.SetLinger(tcpLinger)
+			}
 			if sockBuf > 0 {
 				tc.SetReadBuffer(sockBuf)
 				tc.SetWriteBuffer(sockBuf)

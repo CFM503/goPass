@@ -11,7 +11,7 @@
 
 <body>
     <div class="sidebar">
-        <div class="logo">GoPass <span style="font-size:12px;opacity:0.6;font-weight:normal">v1.2.3</span></div>
+        <div class="logo">GoPass <span style="font-size:12px;opacity:0.6;font-weight:normal">v1.2.4</span></div>
         <nav>
             <a href="#" class="active" id="nav-dashboard">Dashboard</a>
             <a href="#" id="nav-rules">Rules</a>
@@ -218,6 +218,29 @@
                             <span style="color:#a1a1aa; font-size:12px;">Prevents data truncation on close</span>
                         </label>
                     </div>
+
+                    <div style="display:flex; gap: 10px; align-items: center;">
+                        <label style="color:var(--text-secondary); width:180px;">TCP Keep-Alive</label>
+                        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                            <input type="checkbox" id="perf-tcp-keepalive"
+                                style="width:18px; height:18px; cursor:pointer;">
+                            <span style="color:#a1a1aa; font-size:12px;">Keeps video streams from disconnecting</span>
+                        </label>
+                    </div>
+
+                    <div style="display:flex; gap: 10px; align-items: center;">
+                        <label style="color:var(--text-secondary); width:180px;">Keep-Alive Period (s)</label>
+                        <input type="number" id="perf-keepalive-period" min="1" max="3600" step="1"
+                            style="padding:10px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color:white; border-radius:4px; width:140px;">
+                        <span style="color:#a1a1aa; font-size:12px;">Default: 15s</span>
+                    </div>
+
+                    <div style="display:flex; gap: 10px; align-items: center;">
+                        <label style="color:var(--text-secondary); width:180px;">TCP Linger (s)</label>
+                        <input type="number" id="perf-tcp-linger" min="-1" max="30" step="1"
+                            style="padding:10px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color:white; border-radius:4px; width:140px;">
+                        <span style="color:#a1a1aa; font-size:12px;">Default: -1 (OS Default), 0 = Force RST</span>
+                    </div>
                 </div>
 
                 <div style="margin-top: 24px; display: flex; gap: 15px; align-items: center;">
@@ -241,6 +264,9 @@
                 document.getElementById('perf-tcp-nodelay').checked = !!d.tcp_nodelay;
                 document.getElementById('perf-socket-buffer').value = d.tcp_socket_buffer || 4194304;
                 document.getElementById('perf-bidir-wait').checked = !!d.bidirectional_wait;
+                document.getElementById('perf-tcp-keepalive').checked = d.tcp_keep_alive !== undefined ? d.tcp_keep_alive : true;
+                document.getElementById('perf-keepalive-period').value = d.keep_alive_period || 15;
+                document.getElementById('perf-tcp-linger').value = d.tcp_linger !== undefined ? d.tcp_linger : -1;
             } catch (e) { console.error('perf load err', e); }
         }
 
@@ -249,7 +275,10 @@
                 buffer_size: parseInt(document.getElementById('perf-buffer-size').value) || 262144,
                 tcp_nodelay: document.getElementById('perf-tcp-nodelay').checked,
                 tcp_socket_buffer: parseInt(document.getElementById('perf-socket-buffer').value) || 4194304,
-                bidirectional_wait: document.getElementById('perf-bidir-wait').checked
+                bidirectional_wait: document.getElementById('perf-bidir-wait').checked,
+                tcp_keep_alive: document.getElementById('perf-tcp-keepalive').checked,
+                keep_alive_period: parseInt(document.getElementById('perf-keepalive-period').value) || 15,
+                tcp_linger: parseInt(document.getElementById('perf-tcp-linger').value) ?? -1
             };
             try {
                 const r = await fetch('/api/performance', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p) });

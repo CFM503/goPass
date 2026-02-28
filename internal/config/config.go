@@ -18,6 +18,9 @@ type PerformanceConfig struct {
 	TCPNoDelay      bool `json:"tcp_nodelay"`
 	TCPSocketBuffer int  `json:"tcp_socket_buffer"`
 	BidirectWait    bool `json:"bidirectional_wait"`
+	TCPKeepAlive    bool `json:"tcp_keep_alive"`
+	KeepAlivePeriod int  `json:"keep_alive_period"`
+	TCPLinger       int  `json:"tcp_linger"`
 }
 
 type APIConfig struct {
@@ -87,6 +90,9 @@ func DefaultConfig() *Config {
 			TCPNoDelay:      true,
 			TCPSocketBuffer: 4194304,
 			BidirectWait:    true,
+			TCPKeepAlive:    true,
+			KeepAlivePeriod: 15,
+			TCPLinger:       -1,
 		},
 	}
 }
