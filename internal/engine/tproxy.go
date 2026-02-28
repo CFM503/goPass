@@ -12,9 +12,11 @@ import (
 	"golang.org/x/net/proxy"
 )
 
+// [v1.2.0 PERF] Buffer increased from 4KB to 32KB.
+// Reduces Read/Write syscall count ~8x for high-throughput video streaming.
 var bufferPool = sync.Pool{
 	New: func() interface{} {
-		return make([]byte, 4096)
+		return make([]byte, 32768) // 32KB, matches typical TCP window size
 	},
 }
 
@@ -167,6 +169,17 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 	}
 	defer remote.Close()
 
+	// [v1.2.0 PERF] TCP tuning for both sides
+	tuneConn := func(c net.Conn) {
+		if tc, ok := c.(*net.TCPConn); ok {
+			tc.SetNoDelay(true)           // Disable Nagle, reduce latency
+			tc.SetReadBuffer(256 * 1024)  // 256KB receive buffer
+			tc.SetWriteBuffer(256 * 1024) // 256KB send buffer
+		}
+	}
+	tuneConn(conn)
+	tuneConn(remote)
+
 	if len(peekBuf) > 0 {
 		_, err := remote.Write(peekBuf)
 		if err != nil {
@@ -230,6 +243,8 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 		done <- struct{}{}
 	}()
 
+	// [v1.2.0 FIX] Wait for BOTH directions to finish, preventing data truncation
+	<-done
 	<-done
 }
 
