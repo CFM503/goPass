@@ -2,6 +2,22 @@ let uiConnLimit = 20;
 let lastConnCount = -1;
 let lastConnHash = 0;
 let ruleSet = new Set();
+let _domCache = null;
+
+function getDOM() {
+    if (_domCache) return _domCache;
+    _domCache = {
+        sysPid: document.getElementById('sys-pid'),
+        connCount: document.getElementById('conn-count'),
+        rxBytes: document.getElementById('rx-bytes'),
+        txBytes: document.getElementById('tx-bytes'),
+        proxyBody: document.getElementById('conn-list-proxy'),
+        directBody: document.getElementById('conn-list-direct'),
+        proxyTitle: document.getElementById('proxy-title'),
+        directTitle: document.getElementById('direct-title'),
+    };
+    return _domCache;
+}
 
 document.addEventListener('DOMContentLoaded', () => {
     connectWS();
@@ -41,17 +57,11 @@ function connectWS() {
     socket.onmessage = (event) => {
         try {
             const data = JSON.parse(event.data);
-            const pidEl = document.getElementById('sys-pid');
-            if (pidEl && data.pid) pidEl.innerText = data.pid;
-
-            const connEl = document.getElementById('conn-count');
-            if (connEl) connEl.innerText = data.connections || 0;
-
-            const rxEl = document.getElementById('rx-bytes');
-            if (rxEl) rxEl.innerText = data.rx || "0 B/s";
-
-            const txEl = document.getElementById('tx-bytes');
-            if (txEl) txEl.innerText = data.tx || "0 B/s";
+            const dom = getDOM();
+            if (dom.sysPid && data.pid) dom.sysPid.innerText = data.pid;
+            if (dom.connCount) dom.connCount.innerText = data.connections || 0;
+            if (dom.rxBytes) dom.rxBytes.innerText = data.rx || "0 B/s";
+            if (dom.txBytes) dom.txBytes.innerText = data.tx || "0 B/s";
 
             if (data.active) {
                 const count = data.active.length;
@@ -70,10 +80,10 @@ function connectWS() {
                     }
                     if (hash !== lastConnHash) {
                         lastConnHash = hash;
-                        renderConnections(data.active);
+                        renderConnections(data.active, dom);
                     }
                 } else {
-                    renderConnections(data.active);
+                    renderConnections(data.active, dom);
                 }
             }
         } catch (e) {
@@ -88,9 +98,8 @@ function connectWS() {
     };
 }
 
-function renderConnections(conns) {
-    const proxyBody = document.getElementById('conn-list-proxy');
-    const directBody = document.getElementById('conn-list-direct');
+function renderConnections(conns, dom) {
+    if (!dom) dom = getDOM();
 
     const proxyConns = [];
     const directConns = [];
@@ -102,11 +111,11 @@ function renderConnections(conns) {
         }
     }
 
-    document.getElementById('proxy-title').innerText = `Proxied Connections (Top ${uiConnLimit})`;
-    document.getElementById('direct-title').innerText = `Direct Connections (Top ${uiConnLimit})`;
+    if (dom.proxyTitle) dom.proxyTitle.innerText = `Proxied Connections (Top ${uiConnLimit})`;
+    if (dom.directTitle) dom.directTitle.innerText = `Direct Connections (Top ${uiConnLimit})`;
 
-    renderGroupedConnections(proxyBody, proxyConns, false);
-    renderGroupedConnections(directBody, directConns, true);
+    renderGroupedConnections(dom.proxyBody, proxyConns, false);
+    renderGroupedConnections(dom.directBody, directConns, true);
 }
 
 function renderGroupedConnections(tbody, conns, showAddButton) {

@@ -171,12 +171,15 @@ func (h *winDivertHandle) Close() {
 // Interceptor：白名单拦截主逻辑（性能优化版）
 // =============================================================================
 
+type modeConfig struct {
+	mode      string
+	whitelist map[string]struct{}
+}
+
 type Interceptor struct {
 	handle atomic.Pointer[winDivertHandle]
 
-	modeMu   sync.RWMutex
-	mode     string
-	whitelist map[string]struct{}
+	modeCfg atomic.Pointer[modeConfig]
 
 	myPid       uint32
 	upstreamPid atomic.Uint32
@@ -192,27 +195,31 @@ type Interceptor struct {
 }
 
 func NewInterceptor(mode string, whitelist []string, tracker *ConnTracker, proxyIP string, proxyPort uint16, tproxyPort uint16, stats *Stats) *Interceptor {
-	i := &Interceptor{
-		mode:      mode,
-		myPid:     uint32(os.Getpid()),
-		tracker:   tracker,
-		proxyIP:   proxyIP,
-		proxyPort: proxyPort,
-		tproxyPort: tproxyPort,
-		stopCh:    make(chan struct{}),
-		stats:     stats,
-		hijackLog: make(map[string]time.Time),
-	}
-	i.setWhitelist(whitelist)
-	return i
-}
-
-func (i *Interceptor) setWhitelist(whitelist []string) {
 	m := make(map[string]struct{}, len(whitelist))
 	for _, name := range whitelist {
 		m[name] = struct{}{}
 	}
-	i.whitelist = m
+	i := &Interceptor{
+		myPid:      uint32(os.Getpid()),
+		tracker:    tracker,
+		proxyIP:    proxyIP,
+		proxyPort:  proxyPort,
+		tproxyPort: tproxyPort,
+		stopCh:     make(chan struct{}),
+		stats:      stats,
+		hijackLog:  make(map[string]time.Time),
+	}
+	cfg := &modeConfig{mode: mode, whitelist: m}
+	i.modeCfg.Store(cfg)
+	return i
+}
+
+func (i *Interceptor) setWhitelist(whitelist []string) map[string]struct{} {
+	m := make(map[string]struct{}, len(whitelist))
+	for _, name := range whitelist {
+		m[name] = struct{}{}
+	}
+	return m
 }
 
 func (i *Interceptor) buildFilter() string {
@@ -374,10 +381,9 @@ func (i *Interceptor) handlePacket(pkt []byte, addr *winDivertAddress) {
 		return
 	}
 
-	i.modeMu.RLock()
-	mode := i.mode
-	whitelist := i.whitelist
-	i.modeMu.RUnlock()
+	cfg := i.modeCfg.Load()
+	mode := cfg.mode
+	whitelist := cfg.whitelist
 
 	isAllowed := false
 	matchedName := ""
@@ -480,16 +486,17 @@ func (i *Interceptor) maybeLogHijack(name string, pid uint32, pkt []byte, origDs
 }
 
 func (i *Interceptor) SetMode(mode string) {
-	i.modeMu.Lock()
-	defer i.modeMu.Unlock()
-	i.mode = mode
+	old := i.modeCfg.Load()
+	cfg := &modeConfig{mode: mode, whitelist: old.whitelist}
+	i.modeCfg.Store(cfg)
 	log.Printf("[WinDivert] 工作模式已切换为: %s", mode)
 }
 
 func (i *Interceptor) SetWhitelist(whitelist []string) {
-	i.modeMu.Lock()
-	defer i.modeMu.Unlock()
-	i.setWhitelist(whitelist)
+	old := i.modeCfg.Load()
+	wl := i.setWhitelist(whitelist)
+	cfg := &modeConfig{mode: old.mode, whitelist: wl}
+	i.modeCfg.Store(cfg)
 	log.Printf("[WinDivert] 白名单规则已更新: %v", whitelist)
 }
 

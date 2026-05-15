@@ -304,6 +304,8 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 		}
 	}()
 
+	stats := tp.stats
+
 	donePtr := donePool.Get().(*chan struct{})
 	done := *donePtr
 	defer func() {
@@ -328,8 +330,8 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 		for {
 			n, err := remote.Read(buf)
 			if n > 0 {
-				if tp.stats != nil {
-					atomic.AddInt64(&tp.stats.RxBytes, int64(n))
+				if stats != nil {
+					atomic.AddInt64(&stats.RxBytes, int64(n))
 				}
 				if _, errWrite := conn.Write(buf[:n]); errWrite != nil {
 					if tc, ok := conn.(*net.TCPConn); ok {
@@ -363,8 +365,8 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 		for {
 			n, err := conn.Read(buf)
 			if n > 0 {
-				if tp.stats != nil {
-					atomic.AddInt64(&tp.stats.TxBytes, int64(n))
+				if stats != nil {
+					atomic.AddInt64(&stats.TxBytes, int64(n))
 				}
 				if _, errWrite := remote.Write(buf[:n]); errWrite != nil {
 					if tc, ok := remote.(*net.TCPConn); ok {

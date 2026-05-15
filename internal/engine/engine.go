@@ -33,6 +33,12 @@ type ConnInfo struct {
 	Policy  string `json:"policy"`
 }
 
+// directKey uses [4]byte + uint16 to avoid string allocations
+type directKey struct {
+	srcIP   [4]byte
+	srcPort uint16
+}
+
 // directItem 内部结构，避免 map[string]interface{} 分配
 type directItem struct {
 	ID       string
@@ -40,7 +46,7 @@ type directItem struct {
 	Target   string
 	Host     string
 	Policy   string
-	LastSeen time.Time
+	LastSeen int64 // unix nano, avoids time.Time alloc
 }
 
 // byLastSeen implements sort.Interface for []directItem
@@ -48,7 +54,7 @@ type byLastSeen []directItem
 
 func (a byLastSeen) Len() int           { return len(a) }
 func (a byLastSeen) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
-func (a byLastSeen) Less(i, j int) bool { return a[i].LastSeen.After(a[j].LastSeen) }
+func (a byLastSeen) Less(i, j int) bool { return a[i].LastSeen > a[j].LastSeen }
 
 // Stats 保存引擎运行状态（性能优化版）
 type Stats struct {
@@ -60,7 +66,7 @@ type Stats struct {
 	active   map[string]ConnInfo
 	activeMu sync.RWMutex
 
-	directItems map[string]directItem
+	directItems map[directKey]directItem
 	directMu    sync.RWMutex
 
 	cfg *config.Config
@@ -84,28 +90,27 @@ func (s *Stats) RemoveActiveConn(id string) {
 	s.activeMu.Unlock()
 }
 
-// ReportDirect 上报直连连接（优化：time.Now/strconv 移到锁外，[4]byte 避免 string 分配）
+// ReportDirect 上报直连连接（优化：[4]byte key 避免 string 分配，int64 时间戳避免 time.Time 分配）
 func (s *Stats) ReportDirect(srcIP [4]byte, srcPort uint16, process string, host [4]byte, dstPort uint16) {
-	hostStr := ip4String(host)
-	id := ip4String(srcIP) + ":" + strconv.Itoa(int(srcPort))
-	target := hostStr + ":" + strconv.Itoa(int(dstPort))
-	now := time.Now()
+	now := time.Now().UnixNano()
 
 	s.directMu.Lock()
 	defer s.directMu.Unlock()
 
-	if item, ok := s.directItems[id]; ok {
-		if now.Sub(item.LastSeen) < 5*time.Second {
+	key := directKey{srcIP: srcIP, srcPort: srcPort}
+	if item, ok := s.directItems[key]; ok {
+		if now-item.LastSeen < 5_000_000_000 {
 			item.LastSeen = now
-			s.directItems[id] = item
+			s.directItems[key] = item
 			return
 		}
 	}
 
-	s.directItems[id] = directItem{
-		ID:       id,
+	hostStr := ip4String(host)
+	s.directItems[key] = directItem{
+		ID:       ip4String(srcIP) + ":" + strconv.Itoa(int(srcPort)),
 		Process:  process,
-		Target:   target,
+		Target:   hostStr + ":" + strconv.Itoa(int(dstPort)),
 		Host:     hostStr,
 		Policy:   "DIRECT",
 		LastSeen: now,
@@ -177,7 +182,7 @@ func New(cfg *config.Config) (*Engine, error) {
 	stats := &Stats{
 		PID:         os.Getpid(),
 		active:      make(map[string]ConnInfo),
-		directItems: make(map[string]directItem),
+		directItems: make(map[directKey]directItem),
 		cfg:         cfg,
 	}
 
@@ -195,24 +200,23 @@ func (s *Stats) startGC() {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
-	// Cache TTL to avoid lock contention on every tick
-	var cachedTTL time.Duration = 5 * time.Second
+	var cachedTTL int64 = 5_000_000_000
 
 	for range ticker.C {
 		s.directMu.RLock()
 		if s.cfg != nil && s.cfg.System.DirectConnsTTL > 0 {
-			newTTL := time.Duration(s.cfg.System.DirectConnsTTL) * time.Second
+			newTTL := int64(s.cfg.System.DirectConnsTTL) * 1_000_000_000
 			if newTTL != cachedTTL {
 				cachedTTL = newTTL
 			}
 		}
 		s.directMu.RUnlock()
 
-		now := time.Now()
+		now := time.Now().UnixNano()
 		s.directMu.Lock()
-		for id, item := range s.directItems {
-			if now.Sub(item.LastSeen) > cachedTTL {
-				delete(s.directItems, id)
+		for key, item := range s.directItems {
+			if now-item.LastSeen > cachedTTL {
+				delete(s.directItems, key)
 			}
 		}
 		s.directMu.Unlock()
