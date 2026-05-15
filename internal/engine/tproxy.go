@@ -96,17 +96,16 @@ type TProxy struct {
 
 	dialer atomic.Pointer[proxy.Dialer]
 
-	bufferSize      int
-	tcpNoDelay      bool
-	tcpSocketBuffer int
-	bidirectWait    bool
-	tcpKeepAlive    bool
-	keepAlivePeriod int
-	tcpLinger       int
-	perfMu          sync.RWMutex
+	bufferSize      atomic.Int64
+	tcpNoDelay      atomic.Bool
+	tcpSocketBuffer atomic.Int64
+	bidirectWait    atomic.Bool
+	tcpKeepAlive    atomic.Bool
+	keepAlivePeriod atomic.Int64
+	tcpLinger       atomic.Int64
 
-	stats    *Stats
-	sem      chan struct{} // connection semaphore
+	stats *Stats
+	sem   chan struct{} // connection semaphore
 }
 
 // maxConns limits concurrent proxied connections to prevent goroutine exhaustion
@@ -131,33 +130,31 @@ func NewTProxy(tracker *ConnTracker, proxyType, proxyAddr string, stats *Stats, 
 	}
 
 	tp := &TProxy{
-		listener:        ln,
-		tracker:         tracker,
-		bufferSize:      perf.BufferSize,
-		tcpNoDelay:      perf.TCPNoDelay,
-		tcpSocketBuffer: perf.TCPSocketBuffer,
-		bidirectWait:    perf.BidirectWait,
-		tcpKeepAlive:    perf.TCPKeepAlive,
-		keepAlivePeriod: perf.KeepAlivePeriod,
-		tcpLinger:       perf.TCPLinger,
-		stats:           stats,
-		sem:             make(chan struct{}, maxConns),
+		listener: ln,
+		tracker:  tracker,
+		stats:    stats,
+		sem:      make(chan struct{}, maxConns),
 	}
+	tp.bufferSize.Store(int64(perf.BufferSize))
+	tp.tcpNoDelay.Store(perf.TCPNoDelay)
+	tp.tcpSocketBuffer.Store(int64(perf.TCPSocketBuffer))
+	tp.bidirectWait.Store(perf.BidirectWait)
+	tp.tcpKeepAlive.Store(perf.TCPKeepAlive)
+	tp.keepAlivePeriod.Store(int64(perf.KeepAlivePeriod))
+	tp.tcpLinger.Store(int64(perf.TCPLinger))
 	tp.dialer.Store(&dialer)
 	return tp, nil
 }
 
 // UpdatePerformance 热更新性能参数
 func (tp *TProxy) UpdatePerformance(perf config.PerformanceConfig) {
-	tp.perfMu.Lock()
-	defer tp.perfMu.Unlock()
-	tp.bufferSize = perf.BufferSize
-	tp.tcpNoDelay = perf.TCPNoDelay
-	tp.tcpSocketBuffer = perf.TCPSocketBuffer
-	tp.bidirectWait = perf.BidirectWait
-	tp.tcpKeepAlive = perf.TCPKeepAlive
-	tp.keepAlivePeriod = perf.KeepAlivePeriod
-	tp.tcpLinger = perf.TCPLinger
+	tp.bufferSize.Store(int64(perf.BufferSize))
+	tp.tcpNoDelay.Store(perf.TCPNoDelay)
+	tp.tcpSocketBuffer.Store(int64(perf.TCPSocketBuffer))
+	tp.bidirectWait.Store(perf.BidirectWait)
+	tp.tcpKeepAlive.Store(perf.TCPKeepAlive)
+	tp.keepAlivePeriod.Store(int64(perf.KeepAlivePeriod))
+	tp.tcpLinger.Store(int64(perf.TCPLinger))
 	log.Printf("[TProxy] 🚀 性能参数热更新: Buffer=%dB, NoDelay=%v, SocketBuf=%dB, BidirectWait=%v, KeepAlive=%v/%ds, Linger=%d",
 		perf.BufferSize, perf.TCPNoDelay, perf.TCPSocketBuffer, perf.BidirectWait, perf.TCPKeepAlive, perf.KeepAlivePeriod, perf.TCPLinger)
 }
@@ -218,15 +215,13 @@ func (tp *TProxy) Accept() {
 func (tp *TProxy) handleConn(conn net.Conn) {
 	defer conn.Close()
 
-	tp.perfMu.RLock()
-	bufSize := tp.bufferSize
-	noDelay := tp.tcpNoDelay
-	sockBuf := tp.tcpSocketBuffer
-	biWait := tp.bidirectWait
-	keepAlive := tp.tcpKeepAlive
-	keepAlivePeriod := tp.keepAlivePeriod
-	tcpLinger := tp.tcpLinger
-	tp.perfMu.RUnlock()
+	bufSize := int(tp.bufferSize.Load())
+	noDelay := tp.tcpNoDelay.Load()
+	sockBuf := int(tp.tcpSocketBuffer.Load())
+	biWait := tp.bidirectWait.Load()
+	keepAlive := tp.tcpKeepAlive.Load()
+	keepAlivePeriod := int(tp.keepAlivePeriod.Load())
+	tcpLinger := int(tp.tcpLinger.Load())
 
 	if bufSize <= 0 {
 		bufSize = 32768

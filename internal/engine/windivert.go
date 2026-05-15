@@ -437,7 +437,26 @@ func (i *Interceptor) handlePacket(pkt []byte, addr *winDivertAddress) {
 }
 
 func (i *Interceptor) maybeLogHijack(name string, pid uint32, pkt []byte, origDstPort uint16) {
-	key := name + ":" + strconv.Itoa(int(pid))
+	var buf [64]byte
+	n := copy(buf[:], name)
+	buf[n] = ':'
+	n++
+	// Inline itoa for pid to avoid strconv.Itoa alloc
+	pidStr := buf[n:]
+	pidVal := pid
+	if pidVal == 0 {
+		pidStr[0] = '0'
+		n++
+	} else {
+		start := len(pidStr)
+		for pidVal > 0 {
+			start--
+			pidStr[start] = byte('0' + pidVal%10)
+			pidVal /= 10
+		}
+		n += len(pidStr) - start
+	}
+	key := string(buf[:n])
 
 	i.hijackLogMu.Lock()
 	defer i.hijackLogMu.Unlock()

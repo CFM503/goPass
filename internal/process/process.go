@@ -1,7 +1,6 @@
 package process
 
 import (
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -48,9 +47,21 @@ func refreshCache() {
 
 	// Pre-allocate with estimated capacity to reduce map growth overhead
 	newCache := make(map[uint32]string, 256)
+	var nameBuf [MAX_PATH]byte
 	for {
-		// Store lowercase name to avoid ToLower in hot path lookups
-		newCache[entry.Th32ProcessID] = strings.ToLower(syscall.UTF16ToString(entry.SzExeFile[:]))
+		// Convert UTF16 to lowercase in one pass to avoid double alloc
+		n := 0
+		for _, c := range entry.SzExeFile[:] {
+			if c == 0 {
+				break
+			}
+			if c >= 'A' && c <= 'Z' {
+				c += 32
+			}
+			nameBuf[n] = byte(c)
+			n++
+		}
+		newCache[entry.Th32ProcessID] = string(nameBuf[:n])
 		ret, _, _ = procProcess32NextW.Call(uintptr(handle), uintptr(unsafe.Pointer(&entry)))
 		if ret == 0 {
 			break
@@ -82,17 +93,14 @@ type PROCESSENTRY32 struct {
 
 // GetPIDsByName 返回所有匹配进程名的 PID 列表（从缓存读取，零分配对比）
 func GetPIDsByName(processName string) ([]uint32, error) {
-	nameLower := strings.ToLower(processName)
 	var pids []uint32
-
 	cacheMu.RLock()
 	for pid, name := range nameCache {
-		if name == nameLower {
+		if name == processName {
 			pids = append(pids, pid)
 		}
 	}
 	cacheMu.RUnlock()
-
 	return pids, nil
 }
 

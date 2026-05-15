@@ -116,21 +116,37 @@ func (s *Stats) ReportDirect(srcIP [4]byte, srcPort uint16, process string, host
 func (s *Stats) GetActive() []ConnInfo {
 	s.activeMu.RLock()
 	activeLen := len(s.active)
-	result := make([]ConnInfo, 0, activeLen)
+	s.activeMu.RUnlock()
+
+	s.directMu.RLock()
+	showDirect := s.cfg != nil && s.cfg.API.ShowDirectConns
+	directLen := 0
+	directLimit := 20
+	if showDirect {
+		if s.cfg.API.DirectConnsLimit > 0 {
+			directLimit = s.cfg.API.DirectConnsLimit
+		}
+		directLen = len(s.directItems)
+	}
+	s.directMu.RUnlock()
+
+	cap := activeLen
+	if showDirect && directLen < directLimit {
+		cap += directLen
+	} else if showDirect {
+		cap += directLimit
+	}
+	result := make([]ConnInfo, 0, cap)
+
+	s.activeMu.RLock()
 	for _, item := range s.active {
 		result = append(result, item)
 	}
 	s.activeMu.RUnlock()
 
-	s.directMu.RLock()
-	showDirect := s.cfg != nil && s.cfg.API.ShowDirectConns
-	directLimit := 20
-	if showDirect && s.cfg.API.DirectConnsLimit > 0 {
-		directLimit = s.cfg.API.DirectConnsLimit
-	}
-
-	if showDirect && len(s.directItems) > 0 {
-		dItems := make([]directItem, 0, len(s.directItems))
+	if showDirect && directLen > 0 {
+		s.directMu.RLock()
+		dItems := make([]directItem, 0, directLen)
 		for _, item := range s.directItems {
 			dItems = append(dItems, item)
 		}
@@ -151,8 +167,6 @@ func (s *Stats) GetActive() []ConnInfo {
 				Policy:  item.Policy,
 			})
 		}
-	} else {
-		s.directMu.RUnlock()
 	}
 
 	return result
