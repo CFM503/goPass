@@ -34,7 +34,8 @@ type WSServer struct {
 	mu      sync.RWMutex
 	eng     *engine.Engine
 
-	interval atomic.Int64
+	interval       atomic.Int64
+	cachedInterval atomic.Int64
 }
 
 func NewWSServer(eng *engine.Engine) *WSServer {
@@ -84,13 +85,16 @@ func (ws *WSServer) broadcastLoop() {
 		interval := ws.interval.Load()
 
 		if ws.eng != nil {
-			cfg := ws.eng.GetConfig()
-			if cfg != nil {
-				newInterval := int64(cfg.API.WSRefreshInterval)
-				if newInterval >= 1 && newInterval != interval {
-					ws.interval.Store(newInterval)
-					interval = newInterval
-					ticker.Reset(time.Duration(interval) * time.Second)
+			cached := ws.cachedInterval.Load()
+			if cached == 0 || cached != interval {
+				if cfg := ws.eng.GetConfig(); cfg != nil {
+					newInterval := int64(cfg.API.WSRefreshInterval)
+					if newInterval >= 1 && newInterval != interval {
+						ws.interval.Store(newInterval)
+						interval = newInterval
+						ticker.Reset(time.Duration(interval) * time.Second)
+					}
+					ws.cachedInterval.Store(interval)
 				}
 			}
 		}

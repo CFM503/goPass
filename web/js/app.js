@@ -6,7 +6,28 @@ let ruleSet = new Set();
 document.addEventListener('DOMContentLoaded', () => {
     connectWS();
     loadRules();
+
+    const proxyBody = document.getElementById('conn-list-proxy');
+    const directBody = document.getElementById('conn-list-direct');
+
+    if (proxyBody) {
+        proxyBody.addEventListener('click', handleConnRowClick);
+    }
+    if (directBody) {
+        directBody.addEventListener('click', handleConnRowClick);
+    }
 });
+
+function handleConnRowClick(e) {
+    const header = e.target.closest('.process-group-header');
+    if (!header) return;
+    header.classList.toggle('expanded');
+    let next = header.nextElementSibling;
+    while (next && next.classList.contains('process-group-child')) {
+        next.classList.toggle('show');
+        next = next.nextElementSibling;
+    }
+}
 
 function connectWS() {
     const wsUrl = `ws://${window.location.host}/ws`;
@@ -39,7 +60,10 @@ function connectWS() {
                     lastConnSig = '';
                 }
                 if (count <= 50) {
-                    const sig = data.active.map(c => c.process + c.target).join('|');
+                    let sig = '';
+                    for (let i = 0; i < count; i++) {
+                        sig += data.active[i].process + data.active[i].target + '|';
+                    }
                     if (sig !== lastConnSig) {
                         lastConnSig = sig;
                         renderConnections(data.active);
@@ -98,6 +122,7 @@ function renderGroupedConnections(tbody, conns, showAddButton) {
 
         const headerTr = document.createElement('tr');
         headerTr.className = 'process-group-header';
+        headerTr.dataset.process = processName;
 
         const isWhitelisted = ruleSet.has(processName);
         let actionHtml;
@@ -115,15 +140,6 @@ function renderGroupedConnections(tbody, conns, showAddButton) {
         const hostStr = items.length > 1 ? items.map(i => i.host).join(', ') : items[0].host;
 
         headerTr.innerHTML = `<td>${processName}<span class="conn-count">${items.length}</span></td><td>${targetStr}</td><td>${hostStr}</td><td>${actionHtml}</td>`;
-
-        headerTr.addEventListener('click', () => {
-            headerTr.classList.toggle('expanded');
-            let next = headerTr.nextElementSibling;
-            while (next && next.classList.contains('process-group-child')) {
-                next.classList.toggle('show');
-                next = next.nextElementSibling;
-            }
-        });
         fragment.appendChild(headerTr);
 
         items.sort((a, b) => a.target.localeCompare(b.target));

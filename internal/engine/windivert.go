@@ -392,7 +392,6 @@ func (i *Interceptor) handlePacket(pkt []byte, addr *winDivertAddress) {
 		upstreamPid := i.upstreamPid.Load()
 		if upstreamPid == 0 || pid != upstreamPid {
 			isAllowed = true
-			matchedName = process.GetNameByPID(pid)
 		}
 	} else {
 		pName := process.GetNameByPID(pid)
@@ -417,6 +416,10 @@ func (i *Interceptor) handlePacket(pkt []byte, addr *winDivertAddress) {
 			h.Send(pkt, addr)
 		}
 		return
+	}
+
+	if matchedName == "" {
+		matchedName = process.GetNameByPID(pid)
 	}
 
 	i.maybeLogHijack(matchedName, pid, pkt, origDstPort)
@@ -449,22 +452,24 @@ func (i *Interceptor) handlePacket(pkt []byte, addr *winDivertAddress) {
 
 func (i *Interceptor) maybeLogHijack(name string, pid uint32, pkt []byte, origDstPort uint16) {
 	key := name + ":" + strconv.Itoa(int(pid))
-	now := time.Now()
 
 	i.hijackLogMu.Lock()
 	defer i.hijackLogMu.Unlock()
 
-	if last, ok := i.hijackLog[key]; !ok || now.Sub(last) > 10*time.Second {
-		srcIP := ip4String(ip4ToBytes(pkt[12:16]))
-		origDstIP := ip4String(ip4ToBytes(pkt[16:20]))
-		log.Printf("[WinDivert] 劫持进程 %s (PID %d): %s -> %s:%d", name, pid, srcIP, origDstIP, origDstPort)
-		i.hijackLog[key] = now
+	last, ok := i.hijackLog[key]
+	if ok && time.Since(last) <= 10*time.Second {
+		return
+	}
 
-		if len(i.hijackLog) > 100 {
-			for k := range i.hijackLog {
-				delete(i.hijackLog, k)
-				break
-			}
+	srcIP := ip4String(ip4ToBytes(pkt[12:16]))
+	origDstIP := ip4String(ip4ToBytes(pkt[16:20]))
+	log.Printf("[WinDivert] 劫持进程 %s (PID %d): %s -> %s:%d", name, pid, srcIP, origDstIP, origDstPort)
+	i.hijackLog[key] = time.Now()
+
+	if len(i.hijackLog) > 100 {
+		for k := range i.hijackLog {
+			delete(i.hijackLog, k)
+			break
 		}
 	}
 }

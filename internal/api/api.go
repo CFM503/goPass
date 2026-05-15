@@ -1,15 +1,36 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"io/fs"
 	"log"
 	"net/http"
+	"sync"
 
 	"github.com/yourusername/gopass/internal/config"
 	"github.com/yourusername/gopass/internal/engine"
 	"github.com/yourusername/gopass/web"
 )
+
+var jsonBufPool = sync.Pool{
+	New: func() interface{} {
+		buf := &bytes.Buffer{}
+		buf.Grow(512)
+		return buf
+	},
+}
+
+func writeJSON(w http.ResponseWriter, v interface{}) {
+	buf := jsonBufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer jsonBufPool.Put(buf)
+
+	w.Header().Set("Content-Type", "application/json")
+	enc := json.NewEncoder(buf)
+	enc.Encode(v)
+	w.Write(buf.Bytes())
+}
 
 // Typed response structs to eliminate map[string]interface{} allocations
 type statusResp struct {
@@ -69,17 +90,15 @@ func StartServer(addr string, eng *engine.Engine) error {
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
 	resp := statusResp{Status: "running"}
 	if s.engine != nil && s.engine.Stats != nil {
 		resp.PID = s.engine.Stats.PID
 		resp.Connections = s.engine.Stats.Connections
 	}
-	json.NewEncoder(w).Encode(resp)
+	writeJSON(w, resp)
 }
 
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
 	if r.Method == http.MethodGet {
 		resp := settingsResp{
 			Mode:             "whitelist",
@@ -98,7 +117,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				resp.DirectConnsLimit = cfg.API.DirectConnsLimit
 			}
 		}
-		json.NewEncoder(w).Encode(resp)
+		writeJSON(w, resp)
 		return
 	} else if r.Method == http.MethodPost {
 		var req struct {
@@ -126,7 +145,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 					log.Printf("[API] ✅ 已保存设置")
 				}
 			}
-			json.NewEncoder(w).Encode(okResp{Status: "ok"})
+			writeJSON(w, okResp{Status: "ok"})
 			return
 		}
 	}
@@ -134,13 +153,12 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
 	if r.Method == http.MethodGet {
 		resp := rulesResp{Rules: []config.Rule{}}
 		if cfg := s.engine.GetConfig(); cfg != nil {
 			resp.Rules = cfg.Routing.Rules
 		}
-		json.NewEncoder(w).Encode(resp)
+		writeJSON(w, resp)
 		return
 	} else if r.Method == http.MethodPost {
 		var req struct {
@@ -150,7 +168,7 @@ func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
 			if s.engine != nil {
 				s.engine.UpdateRules(req.Rules, "config.json")
 			}
-			json.NewEncoder(w).Encode(okResp{Status: "ok"})
+			writeJSON(w, okResp{Status: "ok"})
 			return
 		}
 	}
@@ -158,7 +176,6 @@ func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpstream(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
 	if r.Method == http.MethodGet {
 		resp := upstreamResp{}
 		if cfg := s.engine.GetConfig(); cfg != nil && len(cfg.Outbounds.Servers) > 0 {
@@ -167,7 +184,7 @@ func (s *Server) handleUpstream(w http.ResponseWriter, r *http.Request) {
 			resp.Address = srv.Address
 			resp.Port = srv.Port
 		}
-		json.NewEncoder(w).Encode(resp)
+		writeJSON(w, resp)
 		return
 	} else if r.Method == http.MethodPost {
 		var req struct {
@@ -179,7 +196,7 @@ func (s *Server) handleUpstream(w http.ResponseWriter, r *http.Request) {
 			if s.engine != nil {
 				s.engine.UpdateUpstream(req.Type, req.Address, req.Port, "config.json")
 			}
-			json.NewEncoder(w).Encode(okResp{Status: "ok"})
+			writeJSON(w, okResp{Status: "ok"})
 			return
 		}
 	}
@@ -187,13 +204,12 @@ func (s *Server) handleUpstream(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePerformance(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
 	if r.Method == http.MethodGet {
 		var perf config.PerformanceConfig
 		if cfg := s.engine.GetConfig(); cfg != nil {
 			perf = cfg.Performance
 		}
-		json.NewEncoder(w).Encode(perf)
+		writeJSON(w, perf)
 		return
 	} else if r.Method == http.MethodPost {
 		var perf config.PerformanceConfig
@@ -208,7 +224,7 @@ func (s *Server) handlePerformance(w http.ResponseWriter, r *http.Request) {
 				s.engine.UpdatePerformance(perf)
 				s.engine.SaveConfig("config.json")
 			}
-			json.NewEncoder(w).Encode(okResp{Status: "ok"})
+			writeJSON(w, okResp{Status: "ok"})
 			return
 		}
 	}
