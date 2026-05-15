@@ -57,31 +57,64 @@ function renderConnections(conns) {
     document.getElementById('proxy-title').innerText = `Proxied Connections (Top ${uiConnLimit})`;
     document.getElementById('direct-title').innerText = `Direct Connections (Top ${uiConnLimit})`;
 
-    proxyConns.forEach(c => {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-            <td>${c.process}</td>
-            <td>${c.target}</td>
-            <td>${c.host}</td>
-            <td><span style="color: var(--accent)">${c.policy}</span></td>
-        `;
-        proxyBody.appendChild(tr);
+    renderGroupedConnections(proxyBody, proxyConns, false);
+    renderGroupedConnections(directBody, directConns, true);
+}
+
+function renderGroupedConnections(tbody, conns, showAddButton) {
+    const groups = {};
+    conns.forEach(c => {
+        const name = c.process || 'unknown';
+        if (!groups[name]) groups[name] = [];
+        groups[name].push(c);
     });
 
-    directConns.forEach(c => {
-        const tr = document.createElement('tr');
-        const isAlreadyWhitelisted = currentRules.some(r => r.payload === c.process);
-        const buttonHtml = isAlreadyWhitelisted
-            ? `<span style="color:var(--text-secondary); font-size:12px;">Already in Whitelist</span>`
-            : `<button onclick="quickAddRule('${c.process}')" style="padding:4px 8px; background:var(--accent); border:none; color:white; border-radius:4px; cursor:pointer; font-size:12px;">Add to Rules</button>`;
+    Object.entries(groups)
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .forEach(([processName, items]) => {
+        const headerTr = document.createElement('tr');
+        headerTr.className = 'process-group-header';
 
-        tr.innerHTML = `
-            <td>${c.process}</td>
-            <td>${c.target}</td>
-            <td>${c.host}</td>
-            <td>${buttonHtml}</td>
+        let actionHtml = '';
+        const isAlreadyWhitelisted = currentRules.some(r => r.payload === processName);
+        if (showAddButton) {
+            actionHtml = isAlreadyWhitelisted
+                ? `<span style="color:var(--text-secondary); font-size:12px;">Already in Whitelist</span>`
+                : `<button onclick="event.stopPropagation(); quickAddRule('${processName}')" style="padding:4px 8px; background:var(--accent); border:none; color:white; border-radius:4px; cursor:pointer; font-size:12px;">Add to Rules</button>`;
+        } else {
+            actionHtml = isAlreadyWhitelisted
+                ? `<span style="color:var(--text-secondary); font-size:12px;">In Whitelist</span>`
+                : `<button onclick="event.stopPropagation(); blockFromProxy('${processName}')" style="padding:4px 8px; background:#f85149; border:none; color:white; border-radius:4px; cursor:pointer; font-size:12px;">Block from Proxy</button>`;
+        }
+
+        headerTr.innerHTML = `
+            <td>${processName}<span class="conn-count">${items.length}</span></td>
+            <td>${items.length > 1 ? items.map(i => i.target).join(', ') : items[0].target}</td>
+            <td>${items.length > 1 ? items.map(i => i.host).join(', ') : items[0].host}</td>
+            <td>${actionHtml}</td>
         `;
-        directBody.appendChild(tr);
+        headerTr.addEventListener('click', () => {
+            headerTr.classList.toggle('expanded');
+            const allChildren = [];
+            let next = headerTr.nextElementSibling;
+            while (next && next.classList.contains('process-group-child')) {
+                allChildren.push(next);
+                next = next.nextElementSibling;
+            }
+            allChildren.forEach(child => child.classList.toggle('show'));
+        });
+        tbody.appendChild(headerTr);
+
+        items.sort((a, b) => a.target.localeCompare(b.target)).forEach(c => {
+            const childTr = document.createElement('tr');
+            childTr.className = 'process-group-child';
+            childTr.innerHTML = `
+                <td>${c.target}</td>
+                <td>${c.host}</td>
+                <td>${showAddButton ? '<span style="color:var(--text-secondary); font-size:12px;">Direct</span>' : `<span style="color: var(--accent)">${c.policy}</span>`}</td>
+            `;
+            tbody.appendChild(childTr);
+        });
     });
 }
 
@@ -104,6 +137,27 @@ window.quickAddRule = function (processName) {
 
     saveRules();
     alert(`Successfully added ${processName} to whitelist!`);
+};
+
+window.blockFromProxy = function (processName) {
+    if (processName === 'unknown' || !processName) {
+        alert("Cannot add unknown process.");
+        return;
+    }
+
+    if (currentRules.some(r => r.payload === processName)) {
+        alert("The program is already in the rules!");
+        return;
+    }
+
+    currentRules.push({
+        type: 'process',
+        payload: processName,
+        outbound: 'direct'
+    });
+
+    saveRules();
+    alert(`Successfully blocked ${processName} from using proxy!`);
 };
 
 // Navigation Logic

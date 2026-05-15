@@ -106,7 +106,11 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				}
 				s.engine.UpdateUIConfig(req.WSRefreshInterval, req.UIConnLimit, req.ShowDirectConns, req.DirectConnsLimit)
 			}
-			s.engine.UpdateMode(req.Mode, "config.json")
+			if err := s.engine.UpdateMode(req.Mode, "config.json"); err != nil {
+				log.Printf("[API] ⚠️ 保存配置失败: %v", err)
+			} else {
+				log.Printf("[API] ✅ 已保存设置")
+			}
 			json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
 			return
 		}
