@@ -19,7 +19,7 @@ func main() {
 	flag.Parse()
 
 	fmt.Println("=== GoPass 透明代理 ===")
-	fmt.Println("Version: v1.2.8")
+	fmt.Println("Version: v1.2.9")
 	fmt.Printf("PID: %d\n\n", os.Getpid())
 
 	// Load Configuration
@@ -34,7 +34,7 @@ func main() {
 		}
 	}
 
-	// [v1.2.8 Config] 根据配置启动进程缓存与网络连接缓存守护
+	// [v1.2.9 Config] 根据配置启动进程缓存与网络连接缓存守护
 	process.InitProcessCache(cfg.System.ProcessCacheRefreshInterval)
 	process.InitNetstatCache(cfg.System.NetstatCacheRefreshInterval)
 

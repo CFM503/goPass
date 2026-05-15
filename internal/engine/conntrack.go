@@ -8,16 +8,18 @@ import (
 )
 
 // ConnKey 唯一标识一条被劫持的连接（源 IP + 源端口）
+// 使用 [4]byte 替代 string 避免分配
 type ConnKey struct {
-	SrcIP   string
+	SrcIP   [4]byte
 	SrcPort uint16
 }
 
 // ConnTarget 记录该连接的全套真实网络四元组，以及底层接口索引
+// 使用 [4]byte 替代 net.IP 避免切片分配
 type ConnTarget struct {
-	OrigSrcIP    net.IP
+	OrigSrcIP    [4]byte
 	OrigSrcPort  uint16
-	OrigDstIP    net.IP
+	OrigDstIP    [4]byte
 	OrigDstPort  uint16
 	OrigIfIdx    uint32
 	OrigSubIfIdx uint32
@@ -30,7 +32,6 @@ type ConnTracker struct {
 	mu      sync.RWMutex
 	entries map[ConnKey]ConnTarget
 	stopCh  chan struct{}
-	// [v1.2.6 Config] 抽取魔法清理调度参数
 	gcInterval int
 	ttl        int
 }
@@ -52,13 +53,22 @@ func NewConnTracker(gcInterval, ttl int) *ConnTracker {
 	return ct
 }
 
+// ipTo4 将 net.IP 转为 [4]byte，零分配
+func ipTo4(ip net.IP) [4]byte {
+	var b [4]byte
+	if ip4 := ip.To4(); ip4 != nil {
+		copy(b[:], ip4)
+	}
+	return b
+}
+
 func (ct *ConnTracker) Set(mappedIP string, mappedPort uint16, origSrcIP net.IP, origSrcPort uint16, origDstIP net.IP, origDstPort uint16, origIfIdx uint32, origSubIfIdx uint32, processName string) {
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
-	ct.entries[ConnKey{mappedIP, mappedPort}] = ConnTarget{
-		OrigSrcIP:    origSrcIP,
+	ct.entries[ConnKey{mappedIPTo4(mappedIP), mappedPort}] = ConnTarget{
+		OrigSrcIP:    ipTo4(origSrcIP),
 		OrigSrcPort:  origSrcPort,
-		OrigDstIP:    origDstIP,
+		OrigDstIP:    ipTo4(origDstIP),
 		OrigDstPort:  origDstPort,
 		OrigIfIdx:    origIfIdx,
 		OrigSubIfIdx: origSubIfIdx,
@@ -67,20 +77,36 @@ func (ct *ConnTracker) Set(mappedIP string, mappedPort uint16, origSrcIP net.IP,
 	}
 }
 
+// mappedIPTo4 将 "127.0.0.1" 这样的字符串解析为 [4]byte，零分配
+func mappedIPTo4(s string) [4]byte {
+	var b [4]byte
+	var n, val int
+	for i := 0; i < 4 && n < len(s); i++ {
+		val = 0
+		for n < len(s) && s[n] >= '0' && s[n] <= '9' {
+			val = val*10 + int(s[n]-'0')
+			n++
+		}
+		b[i] = byte(val)
+		n++ // skip '.'
+	}
+	return b
+}
+
 func (ct *ConnTracker) Get(srcIP string, srcPort uint16) (ConnTarget, bool) {
 	ct.mu.RLock()
 	defer ct.mu.RUnlock()
-	v, ok := ct.entries[ConnKey{srcIP, srcPort}]
+	v, ok := ct.entries[ConnKey{mappedIPTo4(srcIP), srcPort}]
 	return v, ok
 }
 
 func (ct *ConnTracker) Delete(srcIP string, srcPort uint16) {
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
-	delete(ct.entries, ConnKey{srcIP, srcPort})
+	delete(ct.entries, ConnKey{mappedIPTo4(srcIP), srcPort})
 }
 
-// startGC 定期清理超时的孤儿连接记录 (防御内存泄漏)
+// startGC 定期清理超时的孤儿连接记录
 func (ct *ConnTracker) startGC() {
 	ticker := time.NewTicker(time.Duration(ct.gcInterval) * time.Second)
 	defer ticker.Stop()
@@ -92,7 +118,6 @@ func (ct *ConnTracker) startGC() {
 			now := time.Now()
 			ct.mu.Lock()
 			for k, v := range ct.entries {
-				// [v1.2.6 Config] 如果记录在 ttl 秒内没被 TProxy 接管使用(Delete掉)，就认为是死连接，将其清理
 				if now.Sub(v.CreatedAt) > time.Duration(ct.ttl)*time.Second {
 					delete(ct.entries, k)
 				}
@@ -107,5 +132,7 @@ func (ct *ConnTracker) Close() {
 }
 
 func (ct *ConnTarget) String() string {
-	return fmt.Sprintf("%s:%d -> %s:%d", ct.OrigSrcIP.String(), ct.OrigSrcPort, ct.OrigDstIP.String(), ct.OrigDstPort)
+	return fmt.Sprintf("%d.%d.%d.%d:%d -> %d.%d.%d.%d:%d",
+		ct.OrigSrcIP[0], ct.OrigSrcIP[1], ct.OrigSrcIP[2], ct.OrigSrcIP[3], ct.OrigSrcPort,
+		ct.OrigDstIP[0], ct.OrigDstIP[1], ct.OrigDstIP[2], ct.OrigDstIP[3], ct.OrigDstPort)
 }

@@ -2,11 +2,11 @@ package api
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -15,21 +15,33 @@ import (
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
-		return true // Allow local UI
+		return true
 	},
 }
 
+// WSMessage 预定义结构，替代 map[string]interface{} 减少 JSON 编码分配
+type WSMessage struct {
+	PID         int              `json:"pid"`
+	Connections int32            `json:"connections"`
+	RX          string           `json:"rx"`
+	TX          string           `json:"tx"`
+	Active      []engine.ConnInfo `json:"active"`
+}
+
 type WSServer struct {
-	clients map[*websocket.Conn]bool
-	mu      sync.Mutex
+	clients map[*websocket.Conn]struct{}
+	mu      sync.RWMutex
 	eng     *engine.Engine
+
+	interval atomic.Int64
 }
 
 func NewWSServer(eng *engine.Engine) *WSServer {
 	ws := &WSServer{
-		clients: make(map[*websocket.Conn]bool),
+		clients: make(map[*websocket.Conn]struct{}),
 		eng:     eng,
 	}
+	ws.interval.Store(5)
 	go ws.broadcastLoop()
 	return ws
 }
@@ -42,7 +54,7 @@ func (ws *WSServer) HandleWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ws.mu.Lock()
-	ws.clients[conn] = true
+	ws.clients[conn] = struct{}{}
 	ws.mu.Unlock()
 
 	defer func() {
@@ -52,7 +64,6 @@ func (ws *WSServer) HandleWS(w http.ResponseWriter, r *http.Request) {
 		conn.Close()
 	}()
 
-	// Keep alive loop
 	for {
 		if _, _, err := conn.ReadMessage(); err != nil {
 			break
@@ -61,30 +72,27 @@ func (ws *WSServer) HandleWS(w http.ResponseWriter, r *http.Request) {
 }
 
 func (ws *WSServer) broadcastLoop() {
-	interval := 5
-	if ws.eng != nil && ws.eng.GetConfig() != nil && ws.eng.GetConfig().API.WSRefreshInterval >= 1 {
-		interval = ws.eng.GetConfig().API.WSRefreshInterval
-	}
-	ticker := time.NewTicker(time.Duration(interval) * time.Second)
+	ticker := time.NewTicker(time.Duration(ws.interval.Load()) * time.Second)
 	defer ticker.Stop()
 
 	var lastRx, lastTx int64
 
 	for range ticker.C {
-		// 检测刷新间隔是否动态改变
-		newInterval := 5
-		if ws.eng != nil && ws.eng.GetConfig() != nil && ws.eng.GetConfig().API.WSRefreshInterval >= 1 {
-			newInterval = ws.eng.GetConfig().API.WSRefreshInterval
-		}
-		if newInterval != interval {
-			interval = newInterval
-			ticker.Reset(time.Duration(interval) * time.Second)
+		interval := ws.interval.Load()
+
+		if ws.eng != nil && ws.eng.GetConfig() != nil {
+			newInterval := int64(ws.eng.GetConfig().API.WSRefreshInterval)
+			if newInterval >= 1 && newInterval != interval {
+				ws.interval.Store(newInterval)
+				interval = newInterval
+				ticker.Reset(time.Duration(interval) * time.Second)
+			}
 		}
 
 		pid := os.Getpid()
-		var conns int
+		var conns int32
 		var currRx, currTx int64
-		var active []map[string]interface{}
+		var active []engine.ConnInfo
 
 		if ws.eng != nil && ws.eng.Stats != nil {
 			pid = ws.eng.Stats.PID
@@ -94,46 +102,84 @@ func (ws *WSServer) broadcastLoop() {
 			active = ws.eng.Stats.GetActive()
 		}
 
-		rxPerSec := (currRx - lastRx) / int64(interval)
-		txPerSec := (currTx - lastTx) / int64(interval)
+		if active == nil {
+			active = []engine.ConnInfo{}
+		}
+
+		rxPerSec := (currRx - lastRx) / interval
+		txPerSec := (currTx - lastTx) / interval
 		lastRx = currRx
 		lastTx = currTx
 
-		if active == nil {
-			active = []map[string]interface{}{}
+		msg := WSMessage{
+			PID:         pid,
+			Connections: conns,
+			RX:          formatBytes(rxPerSec) + "/s",
+			TX:          formatBytes(txPerSec) + "/s",
+			Active:      active,
 		}
 
-		msg := map[string]interface{}{
-			"pid":         pid,
-			"connections": conns,
-			"rx":          formatBytes(rxPerSec) + "/s",
-			"tx":          formatBytes(txPerSec) + "/s",
-			"active":      active,
+		data, err := json.Marshal(msg)
+		if err != nil {
+			continue
 		}
 
-		data, _ := json.Marshal(msg)
-
-		ws.mu.Lock()
+		ws.mu.RLock()
+		clients := make([]*websocket.Conn, 0, len(ws.clients))
 		for conn := range ws.clients {
+			clients = append(clients, conn)
+		}
+		ws.mu.RUnlock()
+
+		for _, conn := range clients {
 			if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
 				conn.Close()
+				ws.mu.Lock()
 				delete(ws.clients, conn)
+				ws.mu.Unlock()
 			}
 		}
-		ws.mu.Unlock()
 	}
 }
 
-// formatBytes helper for pretty printing bytes
 func formatBytes(b int64) string {
 	const unit = 1024
 	if b < unit {
-		return fmt.Sprintf("%d B", b)
+		return itoa64(b) + " B"
 	}
 	div, exp := int64(unit), 0
 	for n := b / unit; n >= unit; n /= unit {
 		div *= unit
 		exp++
 	}
-	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+	return formatFloat(float64(b)/float64(div)) + " " + "KMGTPE"[exp:exp+1] + "B"
+}
+
+func itoa64(n int64) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
+}
+
+func formatFloat(f float64) string {
+	v := int64(f*10 + 0.5)
+	intPart := v / 10
+	fracPart := v % 10
+	return itoa64(intPart) + "." + itoa64(fracPart)
 }

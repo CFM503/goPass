@@ -27,7 +27,6 @@ const (
 	AF_INET                 = 2
 )
 
-// MIB_TCPROW_OWNER_PID 结构体
 type MIB_TCPROW_OWNER_PID struct {
 	State      uint32
 	LocalAddr  uint32
@@ -39,12 +38,18 @@ type MIB_TCPROW_OWNER_PID struct {
 
 // ========== 全局 TCP 表缓存 ==========
 var (
-	portCache   map[uint16]uint32
+	portCache  map[uint16]uint32
 	portCacheMu sync.RWMutex
-	fallbackMu  sync.Mutex
+
+	// tcpBufPool 复用 TCP 表扫描缓冲区，避免每次 refresh 都分配 100KB+
+	tcpBufPool = sync.Pool{
+		New: func() interface{} {
+			b := make([]byte, 65536)
+			return &b
+		},
+	}
 )
 
-// [v1.2.6 Config] 移除硬编码 init，允许从外部传入刷新频率配置
 func InitNetstatCache(interval int) {
 	portCache = make(map[uint16]uint32)
 	refreshPortCache()
@@ -58,6 +63,7 @@ func InitNetstatCache(interval int) {
 
 // refreshPortCache 一次性扫描整张 TCP 表，写入缓存 map
 func refreshPortCache() {
+	// 第一次调用获取所需大小
 	var size uint32
 	procGetExtendedTcpTable.Call(
 		0,
@@ -71,7 +77,14 @@ func refreshPortCache() {
 		return
 	}
 
-	buf := make([]byte, size)
+	// 从 pool 获取缓冲区，不够大则重新分配
+	bufPtr := tcpBufPool.Get().(*[]byte)
+	buf := *bufPtr
+	if uint32(len(buf)) < size {
+		buf = make([]byte, size)
+		*bufPtr = buf
+	}
+
 	ret, _, _ := procGetExtendedTcpTable.Call(
 		uintptr(unsafe.Pointer(&buf[0])),
 		uintptr(unsafe.Pointer(&size)),
@@ -81,6 +94,7 @@ func refreshPortCache() {
 		0,
 	)
 	if ret != 0 {
+		tcpBufPool.Put(bufPtr)
 		return
 	}
 
@@ -91,7 +105,6 @@ func refreshPortCache() {
 	for i := uint32(0); i < numEntries; i++ {
 		offset := 4 + i*entrySize
 		entry := (*MIB_TCPROW_OWNER_PID)(unsafe.Pointer(&buf[offset]))
-		// 网络字节序端口 → 主机字节序
 		port := uint16(entry.LocalPort>>8) | uint16(entry.LocalPort<<8)
 		newCache[port] = entry.OwningPid
 	}
@@ -99,6 +112,8 @@ func refreshPortCache() {
 	portCacheMu.Lock()
 	portCache = newCache
 	portCacheMu.Unlock()
+
+	tcpBufPool.Put(bufPtr)
 }
 
 // GetPidByPort 从缓存中查找端口对应的 PID，若未命中则实时回退更新
@@ -108,20 +123,11 @@ func GetPidByPort(port uint16) (uint32, error) {
 	portCacheMu.RUnlock()
 
 	if pid == 0 {
-		// [FIX 2] Cache Miss Live Fallback: 新连接可能还未进入 2s 缓存。
-		// 在这里触发一次实时的表刷新，防止新连接的首个 SYN 被当做未识别直连。
-		fallbackMu.Lock()
-		// Double-check 机制防止并发刷新风暴
+		// Cache miss: 触发一次实时刷新
+		refreshPortCache()
 		portCacheMu.RLock()
 		pid = portCache[port]
 		portCacheMu.RUnlock()
-		if pid == 0 {
-			refreshPortCache()
-			portCacheMu.RLock()
-			pid = portCache[port]
-			portCacheMu.RUnlock()
-		}
-		fallbackMu.Unlock()
 	}
 
 	return pid, nil

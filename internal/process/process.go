@@ -16,13 +16,12 @@ var (
 	procProcess32FirstW          = kernel32.NewProc("Process32FirstW")
 	procProcess32NextW           = kernel32.NewProc("Process32NextW")
 
+	// nameCache: PID -> lowercase process name (pre-lowered to avoid ToLower in hot path)
 	nameCache = make(map[uint32]string)
 	cacheMu   sync.RWMutex
 )
 
-// [v1.2.6 Config] 移除硬编码 init，允许从外部传入刷新频率配置
 func InitProcessCache(interval int) {
-	// 启动后台刷新协程
 	go func() {
 		for {
 			refreshCache()
@@ -47,9 +46,11 @@ func refreshCache() {
 		return
 	}
 
-	newCache := make(map[uint32]string)
+	// Pre-allocate with estimated capacity to reduce map growth overhead
+	newCache := make(map[uint32]string, 256)
 	for {
-		newCache[entry.Th32ProcessID] = syscall.UTF16ToString(entry.SzExeFile[:])
+		// Store lowercase name to avoid ToLower in hot path lookups
+		newCache[entry.Th32ProcessID] = strings.ToLower(syscall.UTF16ToString(entry.SzExeFile[:]))
 		ret, _, _ = procProcess32NextW.Call(uintptr(handle), uintptr(unsafe.Pointer(&entry)))
 		if ret == 0 {
 			break
@@ -79,24 +80,23 @@ type PROCESSENTRY32 struct {
 	SzExeFile           [MAX_PATH]uint16
 }
 
-// GetPIDsByName 返回所有匹配进程名的 PID 列表（从缓存读取，节约 CPU）
+// GetPIDsByName 返回所有匹配进程名的 PID 列表（从缓存读取，零分配对比）
 func GetPIDsByName(processName string) ([]uint32, error) {
 	nameLower := strings.ToLower(processName)
 	var pids []uint32
 
 	cacheMu.RLock()
-	defer cacheMu.RUnlock()
-
 	for pid, name := range nameCache {
-		if strings.ToLower(name) == nameLower {
+		if name == nameLower {
 			pids = append(pids, pid)
 		}
 	}
+	cacheMu.RUnlock()
 
 	return pids, nil
 }
 
-// GetNameByPID 返回给定 PID 的进程名（优先从缓存读取，大幅节约 CPU）
+// GetNameByPID 返回给定 PID 的进程名（优先从缓存读取，零分配）
 func GetNameByPID(pid uint32) string {
 	cacheMu.RLock()
 	name, ok := nameCache[pid]

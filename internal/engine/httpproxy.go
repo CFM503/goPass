@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
-	"net/url"
 	"strings"
 
 	"golang.org/x/net/proxy"
@@ -16,8 +14,7 @@ import (
 // HTTPProxyDialer 实现了 proxy.Dialer 接口，通过 HTTP CONNECT 方法连接上游
 type HTTPProxyDialer struct {
 	proxyAddr string
-	username  string
-	password  string
+	auth      string // pre-encoded "Basic ..." header value
 	forward   proxy.Dialer
 }
 
@@ -26,82 +23,108 @@ func NewHTTPProxy(addr, username, password string, forward proxy.Dialer) (proxy.
 	if forward == nil {
 		forward = proxy.Direct
 	}
-	// 确保地址包含端口
 	if !strings.Contains(addr, ":") {
 		addr += ":80"
 	}
+
+	var auth string
+	if username != "" {
+		auth = "Basic " + base64.StdEncoding.EncodeToString([]byte(username+":"+password))
+	}
+
 	return &HTTPProxyDialer{
 		proxyAddr: addr,
-		username:  username,
-		password:  password,
+		auth:      auth,
 		forward:   forward,
 	}, nil
 }
 
 // Dial 建立 HTTP 隧道连接
 func (d *HTTPProxyDialer) Dial(network, addr string) (c net.Conn, err error) {
-	// 1. 连接到 HTTP 代理服务器
 	c, err = d.forward.Dial("tcp", d.proxyAddr)
 	if err != nil {
 		return nil, fmt.Errorf("无法连接到 HTTP 代理 %s: %w", d.proxyAddr, err)
 	}
 
-	// 2. 发送 CONNECT 请求
-	reqURL, err := url.Parse("http://" + addr)
-	if err != nil {
-		c.Close()
-		return nil, err
+	// 手动构建 CONNECT 请求，避免 url.Parse + http.NewRequest 分配
+	req := "CONNECT " + addr + " HTTP/1.1\r\nHost: " + addr + "\r\nUser-Agent: GoPass/1.2.8\r\n"
+	if d.auth != "" {
+		req += "Proxy-Authorization: " + d.auth + "\r\n"
 	}
-	reqURL.Scheme = ""
+	req += "\r\n"
 
-	req, err := http.NewRequest("CONNECT", reqURL.String(), nil)
-	if err != nil {
-		c.Close()
-		return nil, err
-	}
-	req.Close = false
-
-	// Basic Auth
-	if d.username != "" {
-		auth := d.username + ":" + d.password
-		basicAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte(auth))
-		req.Header.Set("Proxy-Authorization", basicAuth)
-	}
-	req.Header.Set("User-Agent", "GoPass/1.1.2")
-
-	err = req.Write(c)
+	_, err = c.Write([]byte(req))
 	if err != nil {
 		c.Close()
 		return nil, fmt.Errorf("发送 CONNECT 请求失败: %w", err)
 	}
 
-	// 3. 读取响应
 	br := bufio.NewReader(c)
-	resp, err := http.ReadResponse(br, req)
+	resp, err := httpReadResponse(br)
 	if err != nil {
 		c.Close()
-		return nil, fmt.Errorf("读取代理响应失败: %w", err)
+		return nil, err
 	}
-	if resp.StatusCode != 200 {
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+	if resp.statusCode != 200 {
+		io.Copy(io.Discard, resp.body)
 		c.Close()
-		return nil, fmt.Errorf("代理服务器拒绝连接: %s", resp.Status)
+		return nil, fmt.Errorf("代理服务器拒绝连接: %s", resp.status)
 	}
-
-	// 注意：这里由于使用了 bufio.Reader 可能会多读数据，
-	// 但 CONNECT 握手通常是以 \r\n\r\n 结尾，紧跟着的通常就是真实数据了。
-	// 对于 TLS SNI 解析等场景，我们需要把缓冲里多读的数据交还出去。
-	// 为了简单和兼容 Go 的 net.Conn，我们在外面直接用这个 net.Conn 读写，
-	// bufio.Reader 里如果有多余数据，我们需要封装一个带 Buffer 的 Conn。
 
 	if br.Buffered() > 0 {
-		// 如果代理服务器在发送 200 OK 之后，立刻发送了对端的数据（极其罕见，通常是客户端先发 TLS ClientHello）
-		// 我们必须保留这些数据
 		return &BufferedConn{Conn: c, br: br}, nil
 	}
 
 	return c, nil
+}
+
+// minimalResponse 避免 http.ReadResponse 的完整解析开销
+type minimalResponse struct {
+	statusCode int
+	status     string
+	body       io.Reader
+}
+
+func httpReadResponse(br *bufio.Reader) (*minimalResponse, error) {
+	line, err := br.ReadString('\n')
+	if err != nil {
+		return nil, fmt.Errorf("读取响应失败: %w", err)
+	}
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return nil, fmt.Errorf("空响应")
+	}
+
+	// Parse "HTTP/1.1 200 Connection established"
+	parts := strings.SplitN(line, " ", 3)
+	if len(parts) < 2 {
+		return nil, fmt.Errorf("无效响应行: %s", line)
+	}
+
+	var code int
+	fmt.Sscanf(parts[1], "%d", &code)
+
+	status := line
+	if len(parts) > 2 {
+		status = parts[1] + " " + parts[2]
+	}
+
+	// 跳过剩余 headers
+	for {
+		hdr, err := br.ReadString('\n')
+		if err != nil {
+			return nil, fmt.Errorf("读取 headers 失败: %w", err)
+		}
+		if strings.TrimSpace(hdr) == "" {
+			break
+		}
+	}
+
+	return &minimalResponse{
+		statusCode: code,
+		status:     status,
+		body:       br,
+	}, nil
 }
 
 // BufferedConn 包装了 net.Conn，优先从 bufio.Reader 中读取数据
@@ -111,5 +134,5 @@ type BufferedConn struct {
 }
 
 func (c *BufferedConn) Read(b []byte) (int, error) {
-	return c.br.Read(b) // br 内部优先读取 Buffer，然后调底层 Conn
+	return c.br.Read(b)
 }

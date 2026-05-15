@@ -144,8 +144,12 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 
 	// [v1.2.6 Config] 填充新增项的默认零值防止挂掉
 	if c.System.TProxyPort == 0 {
-		def := DefaultConfig()
-		c.System = def.System
+		c.System.TProxyPort = 7893
+		c.System.ProcessCacheRefreshInterval = 10
+		c.System.NetstatCacheRefreshInterval = 2
+		c.System.DirectConnsTTL = 5
+		c.System.ConnTrackGCInterval = 30
+		c.System.ConnTrackTTL = 60
 	}
 	if c.API.UIConnLimit == 0 {
 		c.API.UIConnLimit = 10

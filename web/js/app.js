@@ -1,8 +1,10 @@
 let uiConnLimit = 20;
+let lastConnHash = '';
+let ruleSet = new Set();
 
 document.addEventListener('DOMContentLoaded', () => {
     connectWS();
-    loadRules(); // Load rules initially for deduplication check
+    loadRules();
 });
 
 function connectWS() {
@@ -30,7 +32,11 @@ function connectWS() {
             if (txEl) txEl.innerText = data.tx || "0 B/s";
 
             if (data.active) {
-                renderConnections(data.active);
+                const hash = JSON.stringify(data.active);
+                if (hash !== lastConnHash) {
+                    lastConnHash = hash;
+                    renderConnections(data.active);
+                }
             }
         } catch (e) {
             console.error(e);
@@ -48,11 +54,15 @@ function renderConnections(conns) {
     const proxyBody = document.getElementById('conn-list-proxy');
     const directBody = document.getElementById('conn-list-direct');
 
-    proxyBody.innerHTML = '';
-    directBody.innerHTML = '';
-
-    const proxyConns = conns.filter(c => c.policy === 'PROXY').slice(0, uiConnLimit);
-    const directConns = conns.filter(c => c.policy !== 'PROXY').slice(0, uiConnLimit);
+    const proxyConns = [];
+    const directConns = [];
+    for (let i = 0; i < conns.length && (proxyConns.length < uiConnLimit || directConns.length < uiConnLimit); i++) {
+        if (conns[i].policy === 'PROXY' && proxyConns.length < uiConnLimit) {
+            proxyConns.push(conns[i]);
+        } else if (conns[i].policy !== 'PROXY' && directConns.length < uiConnLimit) {
+            directConns.push(conns[i]);
+        }
+    }
 
     document.getElementById('proxy-title').innerText = `Proxied Connections (Top ${uiConnLimit})`;
     document.getElementById('direct-title').innerText = `Direct Connections (Top ${uiConnLimit})`;
@@ -63,59 +73,62 @@ function renderConnections(conns) {
 
 function renderGroupedConnections(tbody, conns, showAddButton) {
     const groups = {};
-    conns.forEach(c => {
-        const name = c.process || 'unknown';
+    for (let i = 0; i < conns.length; i++) {
+        const name = conns[i].process || 'unknown';
         if (!groups[name]) groups[name] = [];
-        groups[name].push(c);
-    });
+        groups[name].push(conns[i]);
+    }
 
-    Object.entries(groups)
-        .sort((a, b) => a[0].localeCompare(b[0]))
-        .forEach(([processName, items]) => {
+    const fragment = document.createDocumentFragment();
+    const sortedKeys = Object.keys(groups).sort();
+
+    for (let gi = 0; gi < sortedKeys.length; gi++) {
+        const processName = sortedKeys[gi];
+        const items = groups[processName];
+
         const headerTr = document.createElement('tr');
         headerTr.className = 'process-group-header';
 
-        let actionHtml = '';
-        const isAlreadyWhitelisted = currentRules.some(r => r.payload === processName);
+        const isWhitelisted = ruleSet.has(processName);
+        let actionHtml;
         if (showAddButton) {
-            actionHtml = isAlreadyWhitelisted
-                ? `<span style="color:var(--text-secondary); font-size:12px;">Already in Whitelist</span>`
+            actionHtml = isWhitelisted
+                ? '<span style="color:var(--text-secondary); font-size:12px;">Already in Whitelist</span>'
                 : `<button onclick="event.stopPropagation(); quickAddRule('${processName}')" style="padding:4px 8px; background:var(--accent); border:none; color:white; border-radius:4px; cursor:pointer; font-size:12px;">Add to Rules</button>`;
         } else {
-            actionHtml = isAlreadyWhitelisted
-                ? `<span style="color:var(--text-secondary); font-size:12px;">In Whitelist</span>`
+            actionHtml = isWhitelisted
+                ? '<span style="color:var(--text-secondary); font-size:12px;">In Whitelist</span>'
                 : `<button onclick="event.stopPropagation(); blockFromProxy('${processName}')" style="padding:4px 8px; background:#f85149; border:none; color:white; border-radius:4px; cursor:pointer; font-size:12px;">Block from Proxy</button>`;
         }
 
-        headerTr.innerHTML = `
-            <td>${processName}<span class="conn-count">${items.length}</span></td>
-            <td>${items.length > 1 ? items.map(i => i.target).join(', ') : items[0].target}</td>
-            <td>${items.length > 1 ? items.map(i => i.host).join(', ') : items[0].host}</td>
-            <td>${actionHtml}</td>
-        `;
+        const targetStr = items.length > 1 ? items.map(i => i.target).join(', ') : items[0].target;
+        const hostStr = items.length > 1 ? items.map(i => i.host).join(', ') : items[0].host;
+
+        headerTr.innerHTML = `<td>${processName}<span class="conn-count">${items.length}</span></td><td>${targetStr}</td><td>${hostStr}</td><td>${actionHtml}</td>`;
+
         headerTr.addEventListener('click', () => {
             headerTr.classList.toggle('expanded');
-            const allChildren = [];
             let next = headerTr.nextElementSibling;
             while (next && next.classList.contains('process-group-child')) {
-                allChildren.push(next);
+                next.classList.toggle('show');
                 next = next.nextElementSibling;
             }
-            allChildren.forEach(child => child.classList.toggle('show'));
         });
-        tbody.appendChild(headerTr);
+        fragment.appendChild(headerTr);
 
-        items.sort((a, b) => a.target.localeCompare(b.target)).forEach(c => {
+        items.sort((a, b) => a.target.localeCompare(b.target));
+        const policyCell = showAddButton ? '<span style="color:var(--text-secondary); font-size:12px;">Direct</span>' : null;
+
+        for (let ci = 0; ci < items.length; ci++) {
             const childTr = document.createElement('tr');
             childTr.className = 'process-group-child';
-            childTr.innerHTML = `
-                <td>${c.target}</td>
-                <td>${c.host}</td>
-                <td>${showAddButton ? '<span style="color:var(--text-secondary); font-size:12px;">Direct</span>' : `<span style="color: var(--accent)">${c.policy}</span>`}</td>
-            `;
-            tbody.appendChild(childTr);
-        });
-    });
+            childTr.innerHTML = `<td>${items[ci].target}</td><td>${items[ci].host}</td><td>${policyCell || `<span style="color: var(--accent)">${items[ci].policy}</span>`}</td>`;
+            fragment.appendChild(childTr);
+        }
+    }
+
+    tbody.innerHTML = '';
+    tbody.appendChild(fragment);
 }
 
 window.quickAddRule = function (processName) {
@@ -124,7 +137,7 @@ window.quickAddRule = function (processName) {
         return;
     }
 
-    if (currentRules.some(r => r.payload === processName)) {
+    if (ruleSet.has(processName)) {
         alert("The program is already in the whitelist!");
         return;
     }
@@ -134,6 +147,7 @@ window.quickAddRule = function (processName) {
         payload: processName,
         outbound: 'proxy'
     });
+    ruleSet.add(processName);
 
     saveRules();
     alert(`Successfully added ${processName} to whitelist!`);
@@ -145,7 +159,7 @@ window.blockFromProxy = function (processName) {
         return;
     }
 
-    if (currentRules.some(r => r.payload === processName)) {
+    if (ruleSet.has(processName)) {
         alert("The program is already in the rules!");
         return;
     }
@@ -155,12 +169,12 @@ window.blockFromProxy = function (processName) {
         payload: processName,
         outbound: 'direct'
     });
+    ruleSet.add(processName);
 
     saveRules();
     alert(`Successfully blocked ${processName} from using proxy!`);
 };
 
-// Navigation Logic
 const navDashboard = document.getElementById('nav-dashboard');
 const navRules = document.getElementById('nav-rules');
 const navSettings = document.getElementById('nav-settings');
@@ -170,8 +184,12 @@ const viewRules = document.getElementById('view-rules');
 const viewSettings = document.getElementById('view-settings');
 
 function switchView(viewId) {
-    [navDashboard, navRules, navSettings].forEach(el => el.classList.remove('active'));
-    [viewDashboard, viewRules, viewSettings].forEach(el => el.style.display = 'none');
+    navDashboard.classList.remove('active');
+    navRules.classList.remove('active');
+    navSettings.classList.remove('active');
+    viewDashboard.style.display = 'none';
+    viewRules.style.display = 'none';
+    viewSettings.style.display = 'none';
 
     if (viewId === 'dashboard') {
         navDashboard.classList.add('active');
@@ -191,7 +209,6 @@ navDashboard.addEventListener('click', (e) => { e.preventDefault(); switchView('
 navRules.addEventListener('click', (e) => { e.preventDefault(); switchView('rules'); });
 navSettings.addEventListener('click', (e) => { e.preventDefault(); switchView('settings'); });
 
-// Rules API
 let currentRules = [];
 
 function loadRules() {
@@ -199,6 +216,7 @@ function loadRules() {
         .then(res => res.json())
         .then(data => {
             currentRules = data.rules || [];
+            ruleSet = new Set(currentRules.map(r => r.payload));
             renderRules();
         })
         .catch(console.error);
@@ -243,19 +261,19 @@ document.getElementById('add-rule-btn').addEventListener('click', () => {
         payload: payload,
         outbound: 'proxy'
     });
+    ruleSet.add(payload);
 
     payloadInput.value = '';
     saveRules();
 });
 
 window.deleteRule = function (idx) {
+    ruleSet.delete(currentRules[idx].payload);
     currentRules.splice(idx, 1);
     saveRules();
 };
 
-// Settings API
 function loadSettings() {
-    // Load Proxy Mode
     fetch('/api/settings')
         .then(res => res.json())
         .then(data => {
@@ -280,7 +298,6 @@ function loadSettings() {
         })
         .catch(console.error);
 
-    // Load Upstream Proxy Settings
     fetch('/api/upstream')
         .then(res => res.json())
         .then(data => {
@@ -352,4 +369,3 @@ document.getElementById('save-settings-btn').addEventListener('click', () => {
         alert("Network error while saving.");
     });
 });
-
