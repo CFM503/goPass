@@ -5,10 +5,12 @@ package engine
 // 参考文档：https://reqrypt.org/windivert-doc.html
 
 import (
+	"embed"
 	"encoding/binary"
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -19,6 +21,37 @@ import (
 	"github.com/yourusername/gopass/internal/process"
 	"golang.org/x/sys/windows"
 )
+
+//go:embed embed/WinDivert.dll
+var winDivertDLLData embed.FS
+
+var (
+	embeddedDLLPath     string
+	embeddedDLLPathOnce sync.Once
+)
+
+func extractEmbeddedDLL() (string, error) {
+	var err error
+	embeddedDLLPathOnce.Do(func() {
+		tmpDir := os.TempDir()
+		dllPath := filepath.Join(tmpDir, "WinDivert.dll")
+
+		data, readErr := winDivertDLLData.ReadFile("embed/WinDivert.dll")
+		if readErr != nil {
+			err = fmt.Errorf("无法读取嵌入的 WinDivert.dll: %w", readErr)
+			return
+		}
+
+		writeErr := os.WriteFile(dllPath, data, 0755)
+		if writeErr != nil {
+			err = fmt.Errorf("无法释放 WinDivert.dll 到临时目录: %w", writeErr)
+			return
+		}
+
+		embeddedDLLPath = dllPath
+	})
+	return embeddedDLLPath, err
+}
 
 const (
 	layerNetwork    = 0
@@ -60,9 +93,22 @@ var (
 
 func loadWinDivert() (*winDivertDLL, error) {
 	wdOnce.Do(func() {
-		dll, err := windows.LoadDLL("WinDivert.dll")
+		var dll *windows.DLL
+		var err error
+
+		// 优先尝试加载嵌入的 DLL
+		dllPath, extractErr := extractEmbeddedDLL()
+		if extractErr == nil && dllPath != "" {
+			dll, err = windows.LoadDLL(dllPath)
+		}
+
+		// 回退：尝试从当前目录加载
+		if dll == nil {
+			dll, err = windows.LoadDLL("WinDivert.dll")
+		}
+
 		if err != nil {
-			wdErr = fmt.Errorf("无法加载 WinDivert.dll: %w\n请确认 WinDivert.dll 与 gopass.exe 在同一目录，且以管理员权限运行", err)
+			wdErr = fmt.Errorf("无法加载 WinDivert.dll: %w\n已尝试：嵌入资源 + 当前目录", err)
 			return
 		}
 		findProc := func(name string) *windows.Proc {
