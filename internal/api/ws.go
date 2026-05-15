@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -76,16 +77,21 @@ func (ws *WSServer) broadcastLoop() {
 	defer ticker.Stop()
 
 	var lastRx, lastTx int64
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
 
 	for range ticker.C {
 		interval := ws.interval.Load()
 
-		if ws.eng != nil && ws.eng.GetConfig() != nil {
-			newInterval := int64(ws.eng.GetConfig().API.WSRefreshInterval)
-			if newInterval >= 1 && newInterval != interval {
-				ws.interval.Store(newInterval)
-				interval = newInterval
-				ticker.Reset(time.Duration(interval) * time.Second)
+		if ws.eng != nil {
+			cfg := ws.eng.GetConfig()
+			if cfg != nil {
+				newInterval := int64(cfg.API.WSRefreshInterval)
+				if newInterval >= 1 && newInterval != interval {
+					ws.interval.Store(newInterval)
+					interval = newInterval
+					ticker.Reset(time.Duration(interval) * time.Second)
+				}
 			}
 		}
 
@@ -119,10 +125,11 @@ func (ws *WSServer) broadcastLoop() {
 			Active:      active,
 		}
 
-		data, err := json.Marshal(msg)
-		if err != nil {
+		buf.Reset()
+		if err := enc.Encode(msg); err != nil {
 			continue
 		}
+		data := buf.Bytes()
 
 		ws.mu.RLock()
 		clients := make([]*websocket.Conn, 0, len(ws.clients))

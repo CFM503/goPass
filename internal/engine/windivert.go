@@ -8,7 +8,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"strconv"
 	"sync"
@@ -40,6 +39,9 @@ const (
 	flagOutbound = 1 << 17
 	flagLoopback = 1 << 18
 )
+
+// loopbackIP 预分配的 127.0.0.1，避免 net.IPv4().To4() 每次分配
+var loopbackIP = [4]byte{127, 0, 0, 1}
 
 type winDivertDLL struct {
 	dll            *windows.DLL
@@ -331,8 +333,8 @@ func (i *Interceptor) handlePacket(pkt []byte, addr *winDivertAddress) {
 	}
 
 	if srcPort == i.tproxyPort {
-		origDstIP := pkt[16:20]
-		target, found := i.tracker.Get(net.IP(origDstIP).String(), origDstPort)
+		origDstIP := ip4ToBytes(pkt[16:20])
+		target, found := i.tracker.Get(origDstIP, origDstPort)
 		if !found {
 			h := i.handle.Load()
 			if h != nil {
@@ -402,12 +404,12 @@ func (i *Interceptor) handlePacket(pkt []byte, addr *winDivertAddress) {
 
 	if !isAllowed {
 		if i.stats != nil {
-			origDstIP := net.IP(pkt[16:20])
-			srcIP := net.IP(pkt[12:16])
+			origDstIP := pkt[16:20]
+			srcIP := pkt[12:16]
 			if matchedName == "" {
 				matchedName = process.GetNameByPID(pid)
 			}
-			i.stats.ReportDirect(srcIP.String(), srcPort, matchedName, origDstIP.String(), origDstPort)
+			i.stats.ReportDirect(ip4ToBytes(srcIP), srcPort, matchedName, ip4ToBytes(origDstIP), origDstPort)
 		}
 
 		h := i.handle.Load()
@@ -419,15 +421,14 @@ func (i *Interceptor) handlePacket(pkt []byte, addr *winDivertAddress) {
 
 	i.maybeLogHijack(matchedName, pid, pkt, origDstPort)
 
-	origDstIP := net.IP(pkt[16:20])
-	origSrcIP := net.IP(pkt[12:16])
+	origDstIP := ip4ToBytes(pkt[16:20])
+	origSrcIP := ip4ToBytes(pkt[12:16])
 	origIfIdx := addr.IfIdx
 	origSubIfIdx := addr.SubIfIdx
-	i.tracker.Set("127.0.0.1", srcPort, origSrcIP, srcPort, origDstIP, origDstPort, origIfIdx, origSubIfIdx, matchedName)
+	i.tracker.Set(loopbackIP, srcPort, origSrcIP, srcPort, origDstIP, origDstPort, origIfIdx, origSubIfIdx, matchedName)
 
-	loopback := net.IPv4(127, 0, 0, 1).To4()
-	copy(pkt[12:16], loopback)
-	copy(pkt[16:20], loopback)
+	copy(pkt[12:16], loopbackIP[:])
+	copy(pkt[16:20], loopbackIP[:])
 	binary.BigEndian.PutUint16(pkt[tcpOffset+2:tcpOffset+4], i.tproxyPort)
 
 	addr.Bits |= uint32(flagOutbound) | uint32(flagLoopback)
@@ -454,8 +455,8 @@ func (i *Interceptor) maybeLogHijack(name string, pid uint32, pkt []byte, origDs
 	defer i.hijackLogMu.Unlock()
 
 	if last, ok := i.hijackLog[key]; !ok || now.Sub(last) > 10*time.Second {
-		srcIP := net.IP(pkt[12:16]).String()
-		origDstIP := net.IP(pkt[16:20]).String()
+		srcIP := ip4String(ip4ToBytes(pkt[12:16]))
+		origDstIP := ip4String(ip4ToBytes(pkt[16:20]))
 		log.Printf("[WinDivert] 劫持进程 %s (PID %d): %s -> %s:%d", name, pid, srcIP, origDstIP, origDstPort)
 		i.hijackLog[key] = now
 

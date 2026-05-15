@@ -14,9 +14,31 @@ import (
 	"golang.org/x/net/proxy"
 )
 
-// ip4String converts [4]byte to dotted decimal string, zero allocation via small buffer
+// ip4String converts [4]byte to dotted decimal string using a single buffer
 func ip4String(b [4]byte) string {
-	return strconv.Itoa(int(b[0])) + "." + strconv.Itoa(int(b[1])) + "." + strconv.Itoa(int(b[2])) + "." + strconv.Itoa(int(b[3]))
+	var buf [15]byte
+	n := 0
+	for i := 0; i < 4; i++ {
+		v := int(b[i])
+		if v >= 100 {
+			buf[n] = byte('0' + v/100)
+			buf[n+1] = byte('0' + (v/10)%10)
+			buf[n+2] = byte('0' + v%10)
+			n += 3
+		} else if v >= 10 {
+			buf[n] = byte('0' + v/10)
+			buf[n+1] = byte('0' + v%10)
+			n += 2
+		} else {
+			buf[n] = byte('0' + v)
+			n++
+		}
+		if i < 3 {
+			buf[n] = '.'
+			n++
+		}
+	}
+	return string(buf[:n])
 }
 
 // bufferPool 32KB buffers; 99% of TLS ClientHellos are <4KB.
@@ -78,8 +100,12 @@ type TProxy struct {
 	tcpLinger       int
 	perfMu          sync.RWMutex
 
-	stats *Stats
+	stats    *Stats
+	sem      chan struct{} // connection semaphore
 }
+
+// maxConns limits concurrent proxied connections to prevent goroutine exhaustion
+const maxConns = 4096
 
 // NewTProxy 创建本地代理监听器
 func NewTProxy(tracker *ConnTracker, proxyType, proxyAddr string, stats *Stats, perf config.PerformanceConfig, tproxyPort int) (*TProxy, error) {
@@ -101,6 +127,7 @@ func NewTProxy(tracker *ConnTracker, proxyType, proxyAddr string, stats *Stats, 
 		keepAlivePeriod: perf.KeepAlivePeriod,
 		tcpLinger:       perf.TCPLinger,
 		stats:           stats,
+		sem:             make(chan struct{}, maxConns),
 	}, nil
 }
 
@@ -151,7 +178,16 @@ func (tp *TProxy) Accept() {
 			return
 		}
 		tempDelay = 0
-		go tp.handleConn(conn)
+		select {
+		case tp.sem <- struct{}{}:
+			go func() {
+				defer func() { <-tp.sem }()
+				tp.handleConn(conn)
+			}()
+		default:
+			log.Printf("[TProxy] 连接数已达上限 (%d)，拒绝新连接", maxConns)
+			conn.Close()
+		}
 	}
 }
 
@@ -180,7 +216,7 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 		return
 	}
 
-	srcIP := tcpAddr.IP.String()
+	srcIP := ip4ToBytes(tcpAddr.IP)
 	srcPort := uint16(tcpAddr.Port)
 
 	target, found := tp.tracker.Get(srcIP, srcPort)
@@ -244,7 +280,7 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 		}
 	}
 
-	connID := srcIP + ":" + strconv.Itoa(int(srcPort))
+	connID := ip4String(srcIP) + ":" + strconv.Itoa(int(srcPort))
 	if tp.stats != nil {
 		tp.stats.AddActiveConn(ConnInfo{
 			ID:      connID,
@@ -265,15 +301,23 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 
 	go func() {
 		buf := bufferPool.Get().([]byte)
-		defer bufferPool.Put(buf)
-		copyBuf := buf[:bufSize]
+		if cap(buf) < bufSize {
+			buf = make([]byte, bufSize)
+		} else {
+			buf = buf[:bufSize]
+		}
+		defer func() {
+			if cap(buf) <= 32768 {
+				bufferPool.Put(buf[:cap(buf)])
+			}
+		}()
 		for {
-			n, err := remote.Read(copyBuf)
+			n, err := remote.Read(buf)
 			if n > 0 {
 				if tp.stats != nil {
 					atomic.AddInt64(&tp.stats.RxBytes, int64(n))
 				}
-				if _, errWrite := conn.Write(copyBuf[:n]); errWrite != nil {
+				if _, errWrite := conn.Write(buf[:n]); errWrite != nil {
 					if tc, ok := conn.(*net.TCPConn); ok {
 						tc.CloseWrite()
 					}
@@ -292,15 +336,23 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 
 	go func() {
 		buf := bufferPool.Get().([]byte)
-		defer bufferPool.Put(buf)
-		copyBuf := buf[:bufSize]
+		if cap(buf) < bufSize {
+			buf = make([]byte, bufSize)
+		} else {
+			buf = buf[:bufSize]
+		}
+		defer func() {
+			if cap(buf) <= 32768 {
+				bufferPool.Put(buf[:cap(buf)])
+			}
+		}()
 		for {
-			n, err := conn.Read(copyBuf)
+			n, err := conn.Read(buf)
 			if n > 0 {
 				if tp.stats != nil {
 					atomic.AddInt64(&tp.stats.TxBytes, int64(n))
 				}
-				if _, errWrite := remote.Write(copyBuf[:n]); errWrite != nil {
+				if _, errWrite := remote.Write(buf[:n]); errWrite != nil {
 					if tc, ok := remote.(*net.TCPConn); ok {
 						tc.CloseWrite()
 					}

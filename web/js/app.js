@@ -1,5 +1,6 @@
 let uiConnLimit = 20;
-let lastConnHash = '';
+let lastConnCount = -1;
+let lastConnSig = '';
 let ruleSet = new Set();
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -32,9 +33,18 @@ function connectWS() {
             if (txEl) txEl.innerText = data.tx || "0 B/s";
 
             if (data.active) {
-                const hash = JSON.stringify(data.active);
-                if (hash !== lastConnHash) {
-                    lastConnHash = hash;
+                const count = data.active.length;
+                if (count !== lastConnCount) {
+                    lastConnCount = count;
+                    lastConnSig = '';
+                }
+                if (count <= 50) {
+                    const sig = data.active.map(c => c.process + c.target).join('|');
+                    if (sig !== lastConnSig) {
+                        lastConnSig = sig;
+                        renderConnections(data.active);
+                    }
+                } else {
                     renderConnections(data.active);
                 }
             }

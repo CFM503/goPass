@@ -12,6 +12,7 @@ import (
 	"github.com/yourusername/gopass/internal/config"
 	"github.com/yourusername/gopass/internal/engine"
 	"github.com/yourusername/gopass/internal/process"
+	"github.com/yourusername/gopass/internal/tray"
 )
 
 func main() {
@@ -19,7 +20,7 @@ func main() {
 	flag.Parse()
 
 	fmt.Println("=== GoPass 透明代理 ===")
-	fmt.Println("Version: v1.2.9")
+	fmt.Println("Version: v1.3.1")
 	fmt.Printf("PID: %d\n\n", os.Getpid())
 
 	// Load Configuration
@@ -34,7 +35,7 @@ func main() {
 		}
 	}
 
-	// [v1.2.9 Config] 根据配置启动进程缓存与网络连接缓存守护
+	// [v1.3.1 Config] 根据配置启动进程缓存与网络连接缓存守护
 	process.InitProcessCache(cfg.System.ProcessCacheRefreshInterval)
 	process.InitNetstatCache(cfg.System.NetstatCacheRefreshInterval)
 
@@ -57,12 +58,22 @@ func main() {
 		log.Fatalf("引擎启动失败: %v", err)
 	}
 
+	// Start system tray icon in background
+	trayQuit := make(chan struct{})
+	go func() {
+		go tray.Setup(cfg.API.ListenAddr)
+		<-trayQuit
+		tray.RemoveTray()
+	}()
+
 	// 阻塞直到 Ctrl+C / SIGTERM
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
 	<-quit
 
 	log.Println("\n正在停止 GoPass...")
+	tray.RemoveTray()
+	close(trayQuit)
 	eng.Stop()
 	log.Println("已退出。")
 }

@@ -43,6 +43,13 @@ type directItem struct {
 	LastSeen time.Time
 }
 
+// byLastSeen implements sort.Interface for []directItem
+type byLastSeen []directItem
+
+func (a byLastSeen) Len() int           { return len(a) }
+func (a byLastSeen) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a byLastSeen) Less(i, j int) bool { return a[i].LastSeen.After(a[j].LastSeen) }
+
 // Stats 保存引擎运行状态（性能优化版）
 type Stats struct {
 	PID         int
@@ -77,10 +84,11 @@ func (s *Stats) RemoveActiveConn(id string) {
 	s.activeMu.Unlock()
 }
 
-// ReportDirect 上报直连连接（优化：time.Now/strconv 移到锁外）
-func (s *Stats) ReportDirect(srcIP string, srcPort uint16, process string, host string, dstPort uint16) {
-	id := srcIP + ":" + strconv.Itoa(int(srcPort))
-	target := host + ":" + strconv.Itoa(int(dstPort))
+// ReportDirect 上报直连连接（优化：time.Now/strconv 移到锁外，[4]byte 避免 string 分配）
+func (s *Stats) ReportDirect(srcIP [4]byte, srcPort uint16, process string, host [4]byte, dstPort uint16) {
+	hostStr := ip4String(host)
+	id := ip4String(srcIP) + ":" + strconv.Itoa(int(srcPort))
+	target := hostStr + ":" + strconv.Itoa(int(dstPort))
 	now := time.Now()
 
 	s.directMu.Lock()
@@ -98,7 +106,7 @@ func (s *Stats) ReportDirect(srcIP string, srcPort uint16, process string, host 
 		ID:       id,
 		Process:  process,
 		Target:   target,
-		Host:     host,
+		Host:     hostStr,
 		Policy:   "DIRECT",
 		LastSeen: now,
 	}
@@ -128,9 +136,7 @@ func (s *Stats) GetActive() []ConnInfo {
 		}
 		s.directMu.RUnlock()
 
-		sort.Slice(dItems, func(i, j int) bool {
-			return dItems[i].LastSeen.After(dItems[j].LastSeen)
-		})
+		sort.Sort(byLastSeen(dItems))
 
 		if len(dItems) > directLimit {
 			dItems = dItems[:directLimit]
