@@ -1,0 +1,43 @@
+{
+    "FixedFileInfo": {
+        "FileVersion": {
+            "Major": 1,
+            "Minor": 3,
+            "Patch": 5,
+            "Build": 0
+        },
+        "ProductVersion": {
+            "Major": 1,
+            "Minor": 3,
+            "Patch": 5,
+            "Build": 0
+        },
+        "FileFlagsMask": "3f",
+        "FileFlags": "00",
+        "FileOS": "040004",
+        "FileType": "01",
+        "FileSubType": "00"
+    },
+    "StringFileInfo": {
+        "Comments": "",
+        "CompanyName": "GoPass",
+        "FileDescription": "GoPass Transparent Proxy",
+        "FileVersion": "1.3.5.0",
+        "InternalName": "gopass.exe",
+        "LegalCopyright": "© 2026 GoPass",
+        "LegalTrademarks": "",
+        "OriginalFilename": "gopass.exe",
+        "PrivateBuild": "",
+        "ProductName": "GoPass",
+        "ProductVersion": "1.3.5.0",
+        "SpecialBuild": ""
+    },
+    "VarFileInfo": {
+        "Translation": {
+            "LangID": "0409",
+            "CharsetID": "04B0"
+        }
+    },
+    "IconPath": "gopass.ico",
+    "ManifestPath": ""
+}
