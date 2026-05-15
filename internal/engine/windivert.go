@@ -332,14 +332,16 @@ func (i *Interceptor) handlePacket(pkt []byte, addr *winDivertAddress) {
 		return
 	}
 
+	h := i.handle.Load()
+	if h == nil {
+		return
+	}
+
 	if srcPort == i.tproxyPort {
 		origDstIP := ip4ToBytes(pkt[16:20])
 		target, found := i.tracker.Get(origDstIP, origDstPort)
 		if !found {
-			h := i.handle.Load()
-			if h != nil {
-				h.Send(pkt, addr)
-			}
+			h.Send(pkt, addr)
 			return
 		}
 
@@ -355,11 +357,6 @@ func (i *Interceptor) handlePacket(pkt []byte, addr *winDivertAddress) {
 		addr.IfIdx = target.OrigIfIdx
 		addr.SubIfIdx = target.OrigSubIfIdx
 
-		h := i.handle.Load()
-		if h == nil {
-			return
-		}
-
 		if err := h.CalcChecksums(pkt, addr); err != nil {
 			log.Printf("[WinDivert] 反向 NAT 计算校验和失败: %v", err)
 			return
@@ -373,10 +370,7 @@ func (i *Interceptor) handlePacket(pkt []byte, addr *winDivertAddress) {
 	pid, _ := process.GetPidByPort(srcPort)
 
 	if pid == 0 || pid == i.myPid {
-		h := i.handle.Load()
-		if h != nil {
-			h.Send(pkt, addr)
-		}
+		h.Send(pkt, addr)
 		return
 	}
 
@@ -411,10 +405,7 @@ func (i *Interceptor) handlePacket(pkt []byte, addr *winDivertAddress) {
 			i.stats.ReportDirect(ip4ToBytes(srcIP), srcPort, matchedName, ip4ToBytes(origDstIP), origDstPort)
 		}
 
-		h := i.handle.Load()
-		if h != nil {
-			h.Send(pkt, addr)
-		}
+		h.Send(pkt, addr)
 		return
 	}
 
@@ -435,11 +426,6 @@ func (i *Interceptor) handlePacket(pkt []byte, addr *winDivertAddress) {
 	binary.BigEndian.PutUint16(pkt[tcpOffset+2:tcpOffset+4], i.tproxyPort)
 
 	addr.Bits |= uint32(flagOutbound) | uint32(flagLoopback)
-
-	h := i.handle.Load()
-	if h == nil {
-		return
-	}
 
 	if err := h.CalcChecksums(pkt, addr); err != nil {
 		log.Printf("[WinDivert] CalcChecksums 失败: %v", err)

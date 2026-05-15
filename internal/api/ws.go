@@ -20,6 +20,13 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+var clientSlicePool = sync.Pool{
+	New: func() interface{} {
+		s := make([]*websocket.Conn, 0, 16)
+		return &s
+	},
+}
+
 // WSMessage 预定义结构，替代 map[string]interface{} 减少 JSON 编码分配
 type WSMessage struct {
 	PID         int              `json:"pid"`
@@ -135,14 +142,15 @@ func (ws *WSServer) broadcastLoop() {
 		}
 		data := buf.Bytes()
 
+		clientsPtr := clientSlicePool.Get().(*[]*websocket.Conn)
+		*clientsPtr = (*clientsPtr)[:0]
 		ws.mu.RLock()
-		clients := make([]*websocket.Conn, 0, len(ws.clients))
 		for conn := range ws.clients {
-			clients = append(clients, conn)
+			*clientsPtr = append(*clientsPtr, conn)
 		}
 		ws.mu.RUnlock()
 
-		for _, conn := range clients {
+		for _, conn := range *clientsPtr {
 			if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
 				conn.Close()
 				ws.mu.Lock()
@@ -150,6 +158,7 @@ func (ws *WSServer) broadcastLoop() {
 				ws.mu.Unlock()
 			}
 		}
+		clientSlicePool.Put(clientsPtr)
 	}
 }
 

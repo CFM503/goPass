@@ -21,15 +21,29 @@ var jsonBufPool = sync.Pool{
 	},
 }
 
-func writeJSON(w http.ResponseWriter, v interface{}) {
-	buf := jsonBufPool.Get().(*bytes.Buffer)
-	buf.Reset()
-	defer jsonBufPool.Put(buf)
+var jsonEncPool = sync.Pool{
+	New: func() interface{} {
+		buf := &bytes.Buffer{}
+		buf.Grow(512)
+		enc := json.NewEncoder(buf)
+		return struct {
+			buf *bytes.Buffer
+			enc *json.Encoder
+		}{buf, enc}
+	},
+}
 
+func writeJSON(w http.ResponseWriter, v interface{}) {
+	item := jsonEncPool.Get().(struct {
+		buf *bytes.Buffer
+		enc *json.Encoder
+	})
+	defer jsonEncPool.Put(item)
+
+	item.buf.Reset()
 	w.Header().Set("Content-Type", "application/json")
-	enc := json.NewEncoder(buf)
-	enc.Encode(v)
-	w.Write(buf.Bytes())
+	item.enc.Encode(v)
+	w.Write(item.buf.Bytes())
 }
 
 // Typed response structs to eliminate map[string]interface{} allocations

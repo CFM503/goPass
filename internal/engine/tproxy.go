@@ -42,10 +42,17 @@ func ip4String(b [4]byte) string {
 }
 
 // bufferPool 32KB buffers; 99% of TLS ClientHellos are <4KB.
-// Large records handled by dynamic alloc in readTLSClientHello.
 var bufferPool = sync.Pool{
 	New: func() interface{} {
 		return make([]byte, 32768)
+	},
+}
+
+// donePool pools bidirectional proxy sync channels.
+var donePool = sync.Pool{
+	New: func() interface{} {
+		ch := make(chan struct{}, 2)
+		return &ch
 	},
 }
 
@@ -242,7 +249,8 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 	}
 	defer tp.tracker.Delete(srcIP, srcPort)
 
-	targetAddr := ip4String(target.OrigDstIP) + ":" + strconv.Itoa(int(target.OrigDstPort))
+	dstIPStr := ip4String(target.OrigDstIP)
+	targetAddr := dstIPStr + ":" + strconv.Itoa(int(target.OrigDstPort))
 
 	var peekBuf []byte
 	isHTTPS := target.OrigDstPort == 443
@@ -290,7 +298,7 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 			ID:      connID,
 			Process: target.ProcessName,
 			Target:  targetAddr,
-			Host:    ip4String(target.OrigDstIP),
+			Host:    dstIPStr,
 			Policy:  "PROXY",
 		})
 	}
@@ -301,7 +309,14 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 		}
 	}()
 
-	done := make(chan struct{}, 2)
+	donePtr := donePool.Get().(*chan struct{})
+	done := *donePtr
+	defer func() {
+		for len(*donePtr) > 0 {
+			<-(*donePtr)
+		}
+		donePool.Put(donePtr)
+	}()
 
 	go func() {
 		buf := bufferPool.Get().([]byte)

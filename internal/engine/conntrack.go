@@ -76,6 +76,7 @@ func ip4ToBytes(ip []byte) [4]byte {
 }
 
 func (ct *ConnTracker) Set(mappedIP [4]byte, mappedPort uint16, origSrcIP [4]byte, origSrcPort uint16, origDstIP [4]byte, origDstPort uint16, origIfIdx uint32, origSubIfIdx uint32, processName string) {
+	createdAt := time.Now()
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
 	ct.entries[ConnKey{mappedIP, mappedPort}] = ConnTarget{
@@ -86,7 +87,7 @@ func (ct *ConnTracker) Set(mappedIP [4]byte, mappedPort uint16, origSrcIP [4]byt
 		OrigIfIdx:    origIfIdx,
 		OrigSubIfIdx: origSubIfIdx,
 		ProcessName:  processName,
-		CreatedAt:    time.Now(),
+		CreatedAt:    createdAt,
 	}
 }
 

@@ -116,18 +116,15 @@ func refreshPortCache() {
 	tcpBufPool.Put(bufPtr)
 }
 
-// GetPidByPort 从缓存中查找端口对应的 PID，若未命中则实时回退更新
+// GetPidByPort 从缓存中查找端口对应的 PID，若未命中则异步触发刷新
 func GetPidByPort(port uint16) (uint32, error) {
 	portCacheMu.RLock()
 	pid := portCache[port]
 	portCacheMu.RUnlock()
 
 	if pid == 0 {
-		// Cache miss: 触发一次实时刷新
-		refreshPortCache()
-		portCacheMu.RLock()
-		pid = portCache[port]
-		portCacheMu.RUnlock()
+		// Cache miss: 异步触发刷新，不阻塞热路径
+		go refreshPortCache()
 	}
 
 	return pid, nil
