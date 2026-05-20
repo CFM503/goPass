@@ -87,7 +87,9 @@ type TProxy struct {
 	listener net.Listener
 	tracker  *ConnTracker
 
-	dialer atomic.Pointer[proxy.Dialer]
+	proxyType string
+	proxyAddr string
+	proxyMu   sync.RWMutex
 
 	bufferSize      atomic.Int64
 	tcpNoDelay      atomic.Bool
@@ -98,11 +100,7 @@ type TProxy struct {
 	tcpLinger       atomic.Int64
 
 	stats *Stats
-	sem   chan struct{} // connection semaphore
 }
-
-// maxConns limits concurrent proxied connections to prevent goroutine exhaustion
-const maxConns = 4096
 
 // NewTProxy 创建本地代理监听器
 func NewTProxy(tracker *ConnTracker, proxyType, proxyAddr string, stats *Stats, perf config.PerformanceConfig, tproxyPort int) (*TProxy, error) {
@@ -112,21 +110,12 @@ func NewTProxy(tracker *ConnTracker, proxyType, proxyAddr string, stats *Stats, 
 	}
 	log.Printf("[TProxy] 本地透明代理监听: 0.0.0.0:%d", tproxyPort)
 
-	var dialer proxy.Dialer
-	if proxyType == "http" {
-		dialer, err = NewHTTPProxy(proxyAddr, "", "", proxy.Direct)
-	} else {
-		dialer, err = proxy.SOCKS5("tcp", proxyAddr, nil, proxy.Direct)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("TProxy dialer creation failed: %w", err)
-	}
-
 	tp := &TProxy{
-		listener: ln,
-		tracker:  tracker,
-		stats:    stats,
-		sem:      make(chan struct{}, maxConns),
+		listener:   ln,
+		tracker:    tracker,
+		proxyType:  proxyType,
+		proxyAddr:  proxyAddr,
+		stats:      stats,
 	}
 	tp.bufferSize.Store(int64(perf.BufferSize))
 	tp.tcpNoDelay.Store(perf.TCPNoDelay)
@@ -135,7 +124,6 @@ func NewTProxy(tracker *ConnTracker, proxyType, proxyAddr string, stats *Stats, 
 	tp.tcpKeepAlive.Store(perf.TCPKeepAlive)
 	tp.keepAlivePeriod.Store(int64(perf.KeepAlivePeriod))
 	tp.tcpLinger.Store(int64(perf.TCPLinger))
-	tp.dialer.Store(&dialer)
 	return tp, nil
 }
 
@@ -154,18 +142,10 @@ func (tp *TProxy) UpdatePerformance(perf config.PerformanceConfig) {
 
 // UpdateUpstream 热更上游代理配置
 func (tp *TProxy) UpdateUpstream(pType, pAddr string) {
-	var dialer proxy.Dialer
-	var err error
-	if pType == "http" {
-		dialer, err = NewHTTPProxy(pAddr, "", "", proxy.Direct)
-	} else {
-		dialer, err = proxy.SOCKS5("tcp", pAddr, nil, proxy.Direct)
-	}
-	if err != nil {
-		log.Printf("[TProxy] 上游代理 Dialer 创建失败: %v", err)
-		return
-	}
-	tp.dialer.Store(&dialer)
+	tp.proxyMu.Lock()
+	defer tp.proxyMu.Unlock()
+	tp.proxyType = pType
+	tp.proxyAddr = pAddr
 	log.Printf("[TProxy] 上游代理已热切换为: %s -> %s", pType, pAddr)
 }
 
@@ -192,16 +172,7 @@ func (tp *TProxy) Accept() {
 			return
 		}
 		tempDelay = 0
-		select {
-		case tp.sem <- struct{}{}:
-			go func() {
-				defer func() { <-tp.sem }()
-				tp.handleConn(conn)
-			}()
-		default:
-			log.Printf("[TProxy] 连接数已达上限 (%d)，拒绝新连接", maxConns)
-			conn.Close()
-		}
+		go tp.handleConn(conn)
 	}
 }
 
@@ -256,13 +227,23 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 		}
 	}
 
-	dialerPtr := tp.dialer.Load()
-	if dialerPtr == nil {
-		log.Printf("[TProxy] Dialer not initialized")
+	tp.proxyMu.RLock()
+	pType := tp.proxyType
+	pAddr := tp.proxyAddr
+	tp.proxyMu.RUnlock()
+
+	var dialer proxy.Dialer
+	if pType == "http" {
+		dialer, _ = NewHTTPProxy(pAddr, "", "", proxy.Direct)
+	} else {
+		dialer, _ = proxy.SOCKS5("tcp", pAddr, nil, proxy.Direct)
+	}
+	if dialer == nil {
+		log.Printf("[TProxy] 代理 Dialer 创建失败")
 		return
 	}
 
-	remote, err := (*dialerPtr).Dial("tcp", targetAddr)
+	remote, err := dialer.Dial("tcp", targetAddr)
 	if err != nil {
 		log.Printf("[TProxy] 上游连接失败 %s: %v", targetAddr, err)
 		return
