@@ -34,33 +34,35 @@ var (
 func extractEmbeddedDLL() (string, error) {
 	var err error
 	embeddedDLLPathOnce.Do(func() {
-		tmpDir := filepath.Join(os.TempDir(), "gopass_wd")
-		if mkErr := os.MkdirAll(tmpDir, 0755); mkErr != nil {
-			err = fmt.Errorf("无法创建临时目录: %w", mkErr)
+		// 释放到 exe 所在目录，WinDivert DLL 内部通过 exe 路径查找 .sys 驱动
+		exePath, exeErr := os.Executable()
+		if exeErr != nil {
+			err = fmt.Errorf("无法获取 exe 路径: %w", exeErr)
 			return
 		}
+		exeDir := filepath.Dir(exePath)
 
 		// 释放 WinDivert.dll
-		dllPath := filepath.Join(tmpDir, "WinDivert.dll")
+		dllPath := filepath.Join(exeDir, "WinDivert.dll")
 		dllData, readErr := winDivertDLLData.ReadFile("embed/WinDivert.dll")
 		if readErr != nil {
 			err = fmt.Errorf("无法读取嵌入的 WinDivert.dll: %w", readErr)
 			return
 		}
 		if writeErr := os.WriteFile(dllPath, dllData, 0755); writeErr != nil {
-			err = fmt.Errorf("无法释放 WinDivert.dll 到临时目录: %w", writeErr)
+			err = fmt.Errorf("无法释放 WinDivert.dll: %w", writeErr)
 			return
 		}
 
 		// 释放 WinDivert64.sys（驱动文件必须与 DLL 在同一目录）
-		sysPath := filepath.Join(tmpDir, "WinDivert64.sys")
+		sysPath := filepath.Join(exeDir, "WinDivert64.sys")
 		sysData, readErr := winDivertDLLData.ReadFile("embed/WinDivert64.sys")
 		if readErr != nil {
 			err = fmt.Errorf("无法读取嵌入的 WinDivert64.sys: %w", readErr)
 			return
 		}
 		if writeErr := os.WriteFile(sysPath, sysData, 0755); writeErr != nil {
-			err = fmt.Errorf("无法释放 WinDivert64.sys 到临时目录: %w", writeErr)
+			err = fmt.Errorf("无法释放 WinDivert64.sys: %w", writeErr)
 			return
 		}
 
@@ -114,8 +116,17 @@ func loadWinDivert() (*winDivertDLL, error) {
 
 		// 优先尝试加载嵌入的 DLL
 		dllPath, extractErr := extractEmbeddedDLL()
+		log.Printf("[WinDivert] 嵌入DLL提取: path=%s, err=%v", dllPath, extractErr)
 		if extractErr == nil && dllPath != "" {
+			// 切换工作目录到 DLL 所在目录，确保 WinDivert 能找到 .sys 驱动
+			dllDir := filepath.Dir(dllPath)
+			if origDir, getErr := os.Getwd(); getErr == nil {
+				os.Chdir(dllDir)
+				log.Printf("[WinDivert] 工作目录: %s -> %s", origDir, dllDir)
+				defer os.Chdir(origDir)
+			}
 			dll, err = windows.LoadDLL(dllPath)
+			log.Printf("[WinDivert] LoadDLL(%s): %v", dllPath, err)
 		}
 
 		// 回退：尝试从当前目录加载
