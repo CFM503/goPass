@@ -42,6 +42,9 @@ func extractEmbeddedDLL() (string, error) {
 		}
 		exeDir := filepath.Dir(exePath)
 
+		// 先停止可能残留的 WinDivert 驱动服务，避免 .sys 文件被占用
+		stopWinDivertDriver()
+
 		// 释放 WinDivert.dll
 		dllPath := filepath.Join(exeDir, "WinDivert.dll")
 		dllData, readErr := winDivertDLLData.ReadFile("embed/WinDivert.dll")
@@ -69,6 +72,24 @@ func extractEmbeddedDLL() (string, error) {
 		embeddedDLLPath = dllPath
 	})
 	return embeddedDLLPath, err
+}
+
+// stopWinDivertDriver 停止并删除可能残留的 WinDivert 驱动服务
+func stopWinDivertDriver() {
+	scm, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_ALL_ACCESS)
+	if err != nil {
+		return
+	}
+	defer windows.CloseServiceHandle(scm)
+	svc, err := windows.OpenService(scm, syscall.StringToUTF16Ptr("WinDivert"), windows.SERVICE_ALL_ACCESS)
+	if err != nil {
+		return
+	}
+	defer windows.CloseServiceHandle(svc)
+	windows.ControlService(svc, windows.SERVICE_CONTROL_STOP, nil)
+	// 等待驱动停止
+	time.Sleep(500 * time.Millisecond)
+	windows.DeleteService(svc)
 }
 
 const (
@@ -116,17 +137,8 @@ func loadWinDivert() (*winDivertDLL, error) {
 
 		// 优先尝试加载嵌入的 DLL
 		dllPath, extractErr := extractEmbeddedDLL()
-		log.Printf("[WinDivert] 嵌入DLL提取: path=%s, err=%v", dllPath, extractErr)
 		if extractErr == nil && dllPath != "" {
-			// 切换工作目录到 DLL 所在目录，确保 WinDivert 能找到 .sys 驱动
-			dllDir := filepath.Dir(dllPath)
-			if origDir, getErr := os.Getwd(); getErr == nil {
-				os.Chdir(dllDir)
-				log.Printf("[WinDivert] 工作目录: %s -> %s", origDir, dllDir)
-				defer os.Chdir(origDir)
-			}
 			dll, err = windows.LoadDLL(dllPath)
-			log.Printf("[WinDivert] LoadDLL(%s): %v", dllPath, err)
 		}
 
 		// 回退：尝试从当前目录加载

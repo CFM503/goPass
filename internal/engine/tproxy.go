@@ -239,11 +239,15 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 		dialer, _ = proxy.SOCKS5("tcp", pAddr, nil, proxy.Direct)
 	}
 	if dialer == nil {
-		log.Printf("[TProxy] 代理 Dialer 创建失败")
+		log.Printf("[TProxy] 代理 Dialer 创建失败 (type=%s, addr=%s)", pType, pAddr)
 		return
 	}
 
 	remote, err := dialer.Dial("tcp", targetAddr)
+	if err != nil {
+		log.Printf("[TProxy] 上游连接失败 %s via %s %s: %v", targetAddr, pType, pAddr, err)
+		return
+	}
 	if err != nil {
 		log.Printf("[TProxy] 上游连接失败 %s: %v", targetAddr, err)
 		return
