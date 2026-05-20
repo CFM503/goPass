@@ -163,11 +163,28 @@ type winDivertHandle struct {
 	dll    *winDivertDLL
 }
 
+func cleanWinDivertService() {
+	// 清除可能残留的旧服务注册（路径失效会导致 WinDivertOpen 报 file not found）
+	scm, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_ALL_ACCESS)
+	if err != nil {
+		return
+	}
+	defer windows.CloseServiceHandle(scm)
+	svc, err := windows.OpenService(scm, syscall.StringToUTF16Ptr("WinDivert"), windows.SERVICE_ALL_ACCESS)
+	if err != nil {
+		return
+	}
+	defer windows.CloseServiceHandle(svc)
+	windows.DeleteService(svc)
+}
+
 func wdOpen(filter string, layer, priority int, flags uint64) (*winDivertHandle, error) {
 	dll, err := loadWinDivert()
 	if err != nil {
 		return nil, err
 	}
+
+	cleanWinDivertService()
 
 	filterPtr, err := syscall.BytePtrFromString(filter)
 	if err != nil {
