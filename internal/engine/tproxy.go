@@ -48,13 +48,6 @@ var bufferPool = sync.Pool{
 	},
 }
 
-// donePool pools bidirectional proxy sync channels.
-var donePool = sync.Pool{
-	New: func() interface{} {
-		ch := make(chan struct{}, 2)
-		return &ch
-	},
-}
 
 // readTLSClientHello reads a complete TLS ClientHello record.
 //
@@ -306,14 +299,7 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 
 	stats := tp.stats
 
-	donePtr := donePool.Get().(*chan struct{})
-	done := *donePtr
-	defer func() {
-		for len(*donePtr) > 0 {
-			<-(*donePtr)
-		}
-		donePool.Put(donePtr)
-	}()
+	done := make(chan struct{}, 2)
 
 	go func() {
 		buf := bufferPool.Get().([]byte)
