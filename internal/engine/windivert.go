@@ -23,6 +23,7 @@ import (
 )
 
 //go:embed embed/WinDivert.dll
+//go:embed embed/WinDivert64.sys
 var winDivertDLLData embed.FS
 
 var (
@@ -33,18 +34,33 @@ var (
 func extractEmbeddedDLL() (string, error) {
 	var err error
 	embeddedDLLPathOnce.Do(func() {
-		tmpDir := os.TempDir()
-		dllPath := filepath.Join(tmpDir, "WinDivert.dll")
+		tmpDir := filepath.Join(os.TempDir(), "gopass_wd")
+		if mkErr := os.MkdirAll(tmpDir, 0755); mkErr != nil {
+			err = fmt.Errorf("无法创建临时目录: %w", mkErr)
+			return
+		}
 
-		data, readErr := winDivertDLLData.ReadFile("embed/WinDivert.dll")
+		// 释放 WinDivert.dll
+		dllPath := filepath.Join(tmpDir, "WinDivert.dll")
+		dllData, readErr := winDivertDLLData.ReadFile("embed/WinDivert.dll")
 		if readErr != nil {
 			err = fmt.Errorf("无法读取嵌入的 WinDivert.dll: %w", readErr)
 			return
 		}
-
-		writeErr := os.WriteFile(dllPath, data, 0755)
-		if writeErr != nil {
+		if writeErr := os.WriteFile(dllPath, dllData, 0755); writeErr != nil {
 			err = fmt.Errorf("无法释放 WinDivert.dll 到临时目录: %w", writeErr)
+			return
+		}
+
+		// 释放 WinDivert64.sys（驱动文件必须与 DLL 在同一目录）
+		sysPath := filepath.Join(tmpDir, "WinDivert64.sys")
+		sysData, readErr := winDivertDLLData.ReadFile("embed/WinDivert64.sys")
+		if readErr != nil {
+			err = fmt.Errorf("无法读取嵌入的 WinDivert64.sys: %w", readErr)
+			return
+		}
+		if writeErr := os.WriteFile(sysPath, sysData, 0755); writeErr != nil {
+			err = fmt.Errorf("无法释放 WinDivert64.sys 到临时目录: %w", writeErr)
 			return
 		}
 

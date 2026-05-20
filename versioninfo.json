@@ -3,13 +3,13 @@
         "FileVersion": {
             "Major": 1,
             "Minor": 3,
-            "Patch": 5,
+            "Patch": 6,
             "Build": 0
         },
         "ProductVersion": {
             "Major": 1,
             "Minor": 3,
-            "Patch": 5,
+            "Patch": 6,
             "Build": 0
         },
         "FileFlagsMask": "3f",
@@ -22,14 +22,14 @@
         "Comments": "",
         "CompanyName": "GoPass",
         "FileDescription": "GoPass Transparent Proxy",
-        "FileVersion": "v1.3.5",
+        "FileVersion": "v1.3.6",
         "InternalName": "gopass.exe",
         "LegalCopyright": "© 2026 GoPass",
         "LegalTrademarks": "",
         "OriginalFilename": "gopass.exe",
         "PrivateBuild": "",
         "ProductName": "GoPass",
-        "ProductVersion": "v1.3.5",
+        "ProductVersion": "v1.3.6",
         "SpecialBuild": ""
     },
     "VarFileInfo": {
