@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -65,11 +66,28 @@ var (
 )
 
 // loadWinDivert 加载 WinDivert.dll（仅加载一次）
+// DLL 和 SYS 驱动已嵌入二进制，启动时释放到临时目录
 func loadWinDivert() (*winDivertDLL, error) {
 	wdOnce.Do(func() {
-		dll, err := windows.LoadDLL("WinDivert.dll")
+		// 释放嵌入的 WinDivert 文件到临时目录
+		tmpDir := filepath.Join(os.TempDir(), "gopass_wd")
+		if err := os.MkdirAll(tmpDir, 0755); err != nil {
+			wdErr = fmt.Errorf("无法创建临时目录: %w", err)
+			return
+		}
+		dllPath := filepath.Join(tmpDir, "WinDivert.dll")
+		sysPath := filepath.Join(tmpDir, "WinDivert64.sys")
+		if err := os.WriteFile(dllPath, windivertDLL, 0755); err != nil {
+			wdErr = fmt.Errorf("无法释放 WinDivert.dll: %w", err)
+			return
+		}
+		if err := os.WriteFile(sysPath, windivertSYS, 0755); err != nil {
+			wdErr = fmt.Errorf("无法释放 WinDivert64.sys: %w", err)
+			return
+		}
+		dll, err := windows.LoadDLL(dllPath)
 		if err != nil {
-			wdErr = fmt.Errorf("无法加载 WinDivert.dll: %w\n请确认 WinDivert.dll 与 gopass.exe 在同一目录，且以管理员权限运行", err)
+			wdErr = fmt.Errorf("无法加载 WinDivert.dll: %w\n请确认以管理员权限运行", err)
 			return
 		}
 		findProc := func(name string) *windows.Proc {
