@@ -5,9 +5,7 @@ import (
 	"log"
 	"os"
 	"sort"
-	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/yourusername/gopass/internal/config"
@@ -21,157 +19,125 @@ type Engine struct {
 	tproxy      *TProxy
 	interceptor *Interceptor
 
+	// 运行时统计（供 API 层读取）
 	Stats *Stats
 }
 
-// ConnInfo 替代 map[string]interface{}，零分配、类型安全
-type ConnInfo struct {
-	ID      string `json:"id"`
-	Process string `json:"process"`
-	Target  string `json:"target"`
-	Host    string `json:"host"`
-	Policy  string `json:"policy"`
-}
-
-// directKey uses [4]byte + uint16 to avoid string allocations
-type directKey struct {
-	srcIP   [4]byte
-	srcPort uint16
-}
-
-// directItem 内部结构，避免 map[string]interface{} 分配
-type directItem struct {
-	ID       string
-	Process  string
-	Target   string
-	Host     string
-	Policy   string
-	LastSeen int64 // unix nano, avoids time.Time alloc
-}
-
-// byLastSeen implements sort.Interface for []directItem
-type byLastSeen []directItem
-
-func (a byLastSeen) Len() int           { return len(a) }
-func (a byLastSeen) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
-func (a byLastSeen) Less(i, j int) bool { return a[i].LastSeen > a[j].LastSeen }
-
-// Stats 保存引擎运行状态（性能优化版）
+// Stats 保存引擎运行状态
 type Stats struct {
 	PID         int
-	Connections int32
+	Connections int
 	RxBytes     int64
 	TxBytes     int64
+	Active      []map[string]interface{}
+	mu          sync.Mutex
 
-	active   map[string]ConnInfo
-	activeMu sync.RWMutex
-
-	directItems map[directKey]directItem
-	directMu    sync.RWMutex
-
-	cfg *config.Config
+	// 记录直连程序：ID -> {Process, Target, LastSeen, LastReported}
+	directItems map[string]map[string]interface{}
+	cfg         *config.Config
 }
 
-// AddActiveConn O(1) 添加，无锁竞争（使用独立 mutex）
-func (s *Stats) AddActiveConn(connInfo ConnInfo) {
-	s.activeMu.Lock()
-	s.active[connInfo.ID] = connInfo
-	s.activeMu.Unlock()
-	atomic.AddInt32(&s.Connections, 1)
-}
-
-// RemoveActiveConn O(1) 删除，无线性扫描
-func (s *Stats) RemoveActiveConn(id string) {
-	s.activeMu.Lock()
-	if _, ok := s.active[id]; ok {
-		delete(s.active, id)
-		atomic.AddInt32(&s.Connections, -1)
+// AddActiveConn 增加一个活动代理连接
+func (s *Stats) AddActiveConn(connInfo map[string]interface{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Connections++
+	if s.Active == nil {
+		s.Active = make([]map[string]interface{}, 0)
 	}
-	s.activeMu.Unlock()
+	s.Active = append(s.Active, connInfo)
 }
 
-// ReportDirect 上报直连连接（优化：[4]byte key 避免 string 分配，int64 时间戳避免 time.Time 分配）
-func (s *Stats) ReportDirect(srcIP [4]byte, srcPort uint16, process string, host [4]byte, dstPort uint16) {
-	now := time.Now().UnixNano()
+// RemoveActiveConn 移除一个活动代理连接
+func (s *Stats) RemoveActiveConn(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	s.directMu.Lock()
-	defer s.directMu.Unlock()
+	activeLen := len(s.Active)
+	for i := 0; i < activeLen; i++ {
+		if s.Active[i]["id"] == id {
+			s.Connections--
+			s.Active[i] = s.Active[activeLen-1]
+			s.Active[activeLen-1] = nil // 显式置空，帮助 GC
+			s.Active = s.Active[:activeLen-1]
+			break
+		}
+	}
+}
 
-	key := directKey{srcIP: srcIP, srcPort: srcPort}
-	if item, ok := s.directItems[key]; ok {
-		if now-item.LastSeen < 5_000_000_000 {
-			item.LastSeen = now
-			s.directItems[key] = item
+// ReportDirect 上报直连连接 (增加频率限制，每 5 秒针对同一个 ID 仅处理一次)
+func (s *Stats) ReportDirect(id, process, target, host string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.directItems == nil {
+		s.directItems = make(map[string]map[string]interface{})
+	}
+
+	now := time.Now()
+	// 频率限制：如果该连接在 5 秒内报送过，则跳过锁竞争激烈的后续逻辑
+	if item, ok := s.directItems[id]; ok {
+		lastReported, _ := item["lastSeen"].(time.Time)
+		if now.Sub(lastReported) < 5*time.Second {
+			// 仅更新最后可见时间，不产生新的渲染负担
+			item["lastSeen"] = now
 			return
 		}
 	}
 
-	hostStr := ip4String(host)
-	s.directItems[key] = directItem{
-		ID:       ip4String(srcIP) + ":" + strconv.Itoa(int(srcPort)),
-		Process:  process,
-		Target:   hostStr + ":" + strconv.Itoa(int(dstPort)),
-		Host:     hostStr,
-		Policy:   "DIRECT",
-		LastSeen: now,
+	s.directItems[id] = map[string]interface{}{
+		"id":       id,
+		"process":  process,
+		"target":   target,
+		"host":     host,
+		"policy":   "DIRECT",
+		"lastSeen": now,
 	}
 }
 
-// GetActive 返回合并后的活动连接（快照模式，缩短锁持有时间）
-func (s *Stats) GetActive() []ConnInfo {
-	s.activeMu.RLock()
-	activeLen := len(s.active)
-	s.activeMu.RUnlock()
+// GetActive 返回合并后的活动连接（代理 + 直连）并清理过期直连
+func (s *Stats) GetActive() []map[string]interface{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	s.directMu.RLock()
-	showDirect := s.cfg != nil && s.cfg.API.ShowDirectConns
-	directLen := 0
-	directLimit := 20
-	if showDirect {
-		if s.cfg.API.DirectConnsLimit > 0 {
-			directLimit = s.cfg.API.DirectConnsLimit
+	var result []map[string]interface{}
+	for _, item := range s.Active {
+		copyItem := make(map[string]interface{})
+		for k, v := range item {
+			copyItem[k] = v
 		}
-		directLen = len(s.directItems)
+		result = append(result, copyItem)
 	}
-	s.directMu.RUnlock()
 
-	cap := activeLen
-	if showDirect && directLen < directLimit {
-		cap += directLen
-	} else if showDirect {
-		cap += directLimit
-	}
-	result := make([]ConnInfo, 0, cap)
-
-	s.activeMu.RLock()
-	for _, item := range s.active {
-		result = append(result, item)
-	}
-	s.activeMu.RUnlock()
-
-	if showDirect && directLen > 0 {
-		s.directMu.RLock()
-		dItems := make([]directItem, 0, directLen)
+	// [v1.2.6 Config] 根据核心配置读取显示开关，并截断
+	if s.cfg != nil && s.cfg.API.ShowDirectConns {
+		var dItems []map[string]interface{}
 		for _, item := range s.directItems {
-			dItems = append(dItems, item)
-		}
-		s.directMu.RUnlock()
-
-		sort.Sort(byLastSeen(dItems))
-
-		if len(dItems) > directLimit {
-			dItems = dItems[:directLimit]
+			copyItem := make(map[string]interface{})
+			for k, v := range item {
+				copyItem[k] = v
+			}
+			dItems = append(dItems, copyItem)
 		}
 
-		for _, item := range dItems {
-			result = append(result, ConnInfo{
-				ID:      item.ID,
-				Process: item.Process,
-				Target:  item.Target,
-				Host:    item.Host,
-				Policy:  item.Policy,
-			})
+		// Sort by lastSeen descending
+		sort.Slice(dItems, func(i, j int) bool {
+			timeI, okI := dItems[i]["lastSeen"].(time.Time)
+			timeJ, okJ := dItems[j]["lastSeen"].(time.Time)
+			if okI && okJ {
+				return timeI.After(timeJ)
+			}
+			return false
+		})
+
+		limit := s.cfg.API.DirectConnsLimit
+		if limit <= 0 {
+			limit = 20
 		}
+		if len(dItems) > limit {
+			dItems = dItems[:limit]
+		}
+		result = append(result, dItems...)
 	}
 
 	return result
@@ -181,11 +147,11 @@ func (s *Stats) GetActive() []ConnInfo {
 func New(cfg *config.Config) (*Engine, error) {
 	stats := &Stats{
 		PID:         os.Getpid(),
-		active:      make(map[string]ConnInfo),
-		directItems: make(map[directKey]directItem),
+		directItems: make(map[string]map[string]interface{}),
 		cfg:         cfg,
 	}
 
+	// 启动独立的僵尸连接垃圾回收器，彻底与前端请求解绑
 	go stats.startGC()
 
 	return &Engine{
@@ -195,31 +161,26 @@ func New(cfg *config.Config) (*Engine, error) {
 	}, nil
 }
 
-// startGC 后台清理过期直连记录
+// startGC 确保后台挂机（没有用户打开界面调用 GetActive）时，不会造成 directItems 内存 OOM
 func (s *Stats) startGC() {
 	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
-	var cachedTTL int64 = 5_000_000_000
-
 	for range ticker.C {
-		s.directMu.RLock()
-		if s.cfg != nil && s.cfg.System.DirectConnsTTL > 0 {
-			newTTL := int64(s.cfg.System.DirectConnsTTL) * 1_000_000_000
-			if newTTL != cachedTTL {
-				cachedTTL = newTTL
-			}
-		}
-		s.directMu.RUnlock()
+		now := time.Now()
 
-		now := time.Now().UnixNano()
-		s.directMu.Lock()
-		for key, item := range s.directItems {
-			if now-item.LastSeen > cachedTTL {
-				delete(s.directItems, key)
+		// [v1.2.6 Config] 抽取内存清理超时触发时间
+		var ttl time.Duration = 5 * time.Second
+		if s.cfg != nil && s.cfg.System.DirectConnsTTL > 0 {
+			ttl = time.Duration(s.cfg.System.DirectConnsTTL) * time.Second
+		}
+
+		s.mu.Lock()
+		for id, item := range s.directItems {
+			lastSeen, ok := item["lastSeen"].(time.Time)
+			if ok && now.Sub(lastSeen) > ttl {
+				delete(s.directItems, id)
 			}
 		}
-		s.directMu.Unlock()
+		s.mu.Unlock()
 	}
 }
 
@@ -227,11 +188,12 @@ func (s *Stats) startGC() {
 func (e *Engine) Start() error {
 	log.Printf("[Engine] GoPass 启动，PID=%d", e.Stats.PID)
 
+	// 找到第一个支持的代理服务器地址 (SOCKS5 或 HTTP)
 	proxyAddr := ""
 	proxyType := ""
 	for _, srv := range e.cfg.Outbounds.Servers {
 		if srv.Type == "socks5" || srv.Type == "http" {
-			proxyAddr = srv.Address + ":" + strconv.Itoa(srv.Port)
+			proxyAddr = fmt.Sprintf("%s:%d", srv.Address, srv.Port)
 			proxyType = srv.Type
 			break
 		}
@@ -241,6 +203,7 @@ func (e *Engine) Start() error {
 	}
 	log.Printf("[Engine] 上游代理 [%s]: %s", proxyType, proxyAddr)
 
+	// 收集进程白名单
 	var whitelist []string
 	for _, rule := range e.cfg.Routing.Rules {
 		if rule.Type == "process" {
@@ -253,11 +216,13 @@ func (e *Engine) Start() error {
 		log.Printf("[Engine] 进程白名单: %v", whitelist)
 	}
 
+	// 解析代理 IP 和端口（用于排除回环）
 	proxyHost, proxyPort, err := parseAddr(proxyAddr)
 	if err != nil {
 		return fmt.Errorf("解析代理地址失败: %w", err)
 	}
 
+	// 启动本地透明代理监听器
 	tproxy, err := NewTProxy(e.tracker, proxyType, proxyAddr, e.Stats, e.cfg.Performance, e.cfg.System.TProxyPort)
 	if err != nil {
 		return fmt.Errorf("TProxy 启动失败: %w", err)
@@ -265,6 +230,7 @@ func (e *Engine) Start() error {
 	e.tproxy = tproxy
 	go tproxy.Accept()
 
+	// 启动 WinDivert 拦截器（纯 Go syscall，无 CGo）
 	interceptor := NewInterceptor(e.cfg.Routing.Mode, whitelist, e.tracker, proxyHost, uint16(proxyPort), uint16(e.cfg.System.TProxyPort), e.Stats)
 	e.interceptor = interceptor
 	go interceptor.Start()
@@ -273,7 +239,7 @@ func (e *Engine) Start() error {
 	return nil
 }
 
-// UpdatePerformance 热更性能设置
+// UpdatePerformance 热更性能设置（立即对新连接生效）
 func (e *Engine) UpdatePerformance(perf config.PerformanceConfig) {
 	e.cfgMu.Lock()
 	e.cfg.Performance = perf
@@ -283,10 +249,11 @@ func (e *Engine) UpdatePerformance(perf config.PerformanceConfig) {
 	}
 }
 
-// UpdateUpstream 热更上游代理
+// UpdateUpstream 供 API 调用，用于热更上游代理
 func (e *Engine) UpdateUpstream(pType, addr string, port int, saveFile string) {
-	newAddr := addr + ":" + strconv.Itoa(port)
+	newAddr := fmt.Sprintf("%s:%d", addr, port)
 
+	// 更新内存配置
 	e.cfgMu.Lock()
 	if len(e.cfg.Outbounds.Servers) > 0 {
 		e.cfg.Outbounds.Servers[0].Type = pType
@@ -302,10 +269,12 @@ func (e *Engine) UpdateUpstream(pType, addr string, port int, saveFile string) {
 	}
 	e.cfgMu.Unlock()
 
+	// 通知 TProxy 热切
 	if e.tproxy != nil {
 		e.tproxy.UpdateUpstream(pType, newAddr)
 	}
 
+	// 持久化配置文件
 	if saveFile != "" {
 		e.cfgMu.RLock()
 		err := e.cfg.Save(saveFile)
@@ -324,7 +293,7 @@ func (e *Engine) Stop() {
 		e.interceptor.Close()
 	}
 	if e.tproxy != nil {
-		e.tproxy.listener.Close()
+		e.tproxy.listener.Close() // TProxy 本身没有 Close 方法，需要关也是关 listener
 	}
 }
 
@@ -350,6 +319,7 @@ func (e *Engine) UpdateRules(rules []config.Rule, configPath string) error {
 	e.cfg.Routing.Rules = rules
 	e.cfgMu.Unlock()
 
+	// 重新收集进程白名单
 	var whitelist []string
 	for _, rule := range rules {
 		if rule.Type == "process" {
@@ -369,7 +339,7 @@ func (e *Engine) UpdateRules(rules []config.Rule, configPath string) error {
 	return nil
 }
 
-// UpdateUIConfig 更新 Web 界面专属配置
+// UpdateUIConfig 更新 Web 界面专属的配置选项
 func (e *Engine) UpdateUIConfig(wsInterval, connLimit int, showDirect bool, directLimit int) {
 	e.cfgMu.Lock()
 	defer e.cfgMu.Unlock()
@@ -379,7 +349,7 @@ func (e *Engine) UpdateUIConfig(wsInterval, connLimit int, showDirect bool, dire
 	e.cfg.API.DirectConnsLimit = directLimit
 }
 
-// GetConfig 返回当前配置的安全快照
+// GetConfig 返回当前配置的安全快照副件，完全根除前端序列化的线程抢占问题
 func (e *Engine) GetConfig() *config.Config {
 	e.cfgMu.RLock()
 	defer e.cfgMu.RUnlock()
@@ -418,8 +388,9 @@ func parseAddr(addr string) (string, int, error) {
 	for i := len(addr) - 1; i >= 0; i-- {
 		if addr[i] == ':' {
 			host := addr[:i]
-			port, err := strconv.Atoi(addr[i+1:])
-			return host, port, err
+			var port int
+			fmt.Sscanf(addr[i+1:], "%d", &port)
+			return host, port, nil
 		}
 	}
 	return "", 0, fmt.Errorf("invalid address: %s", addr)

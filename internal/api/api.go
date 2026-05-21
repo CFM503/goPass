@@ -1,79 +1,15 @@
 package api
 
 import (
-	"bytes"
 	"encoding/json"
 	"io/fs"
 	"log"
 	"net/http"
-	"sync"
 
 	"github.com/yourusername/gopass/internal/config"
 	"github.com/yourusername/gopass/internal/engine"
 	"github.com/yourusername/gopass/web"
 )
-
-var jsonBufPool = sync.Pool{
-	New: func() interface{} {
-		buf := &bytes.Buffer{}
-		buf.Grow(512)
-		return buf
-	},
-}
-
-var jsonEncPool = sync.Pool{
-	New: func() interface{} {
-		buf := &bytes.Buffer{}
-		buf.Grow(512)
-		enc := json.NewEncoder(buf)
-		return struct {
-			buf *bytes.Buffer
-			enc *json.Encoder
-		}{buf, enc}
-	},
-}
-
-func writeJSON(w http.ResponseWriter, v interface{}) {
-	item := jsonEncPool.Get().(struct {
-		buf *bytes.Buffer
-		enc *json.Encoder
-	})
-	defer jsonEncPool.Put(item)
-
-	item.buf.Reset()
-	w.Header().Set("Content-Type", "application/json")
-	item.enc.Encode(v)
-	w.Write(item.buf.Bytes())
-}
-
-// Typed response structs to eliminate map[string]interface{} allocations
-type statusResp struct {
-	Status      string `json:"status"`
-	PID         int    `json:"pid"`
-	Connections int32  `json:"connections"`
-}
-
-type settingsResp struct {
-	Mode              string `json:"mode"`
-	WSRefreshInterval int    `json:"ws_refresh_interval"`
-	UIConnLimit       int    `json:"ui_conn_limit"`
-	ShowDirectConns   bool   `json:"show_direct_conns"`
-	DirectConnsLimit  int    `json:"direct_conns_limit"`
-}
-
-type rulesResp struct {
-	Rules []config.Rule `json:"rules"`
-}
-
-type upstreamResp struct {
-	Type    string `json:"type"`
-	Address string `json:"address"`
-	Port    int    `json:"port"`
-}
-
-type okResp struct {
-	Status string `json:"status"`
-}
 
 type Server struct {
 	engine *engine.Engine
@@ -86,12 +22,14 @@ func StartServer(addr string, eng *engine.Engine) error {
 
 	ws := NewWSServer(eng)
 
+	// [v1.2.6 Config] 真正的单文件运行机制：直接从内嵌的二进制内存文件系统中读取 web 界面
 	subFS, err := fs.Sub(web.FS, ".")
 	if err != nil {
 		return err
 	}
 	mux.Handle("/", http.FileServer(http.FS(subFS)))
 
+	// API endpoints
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/settings", s.handleSettings)
 	mux.HandleFunc("/api/rules", s.handleRules)
@@ -104,34 +42,48 @@ func StartServer(addr string, eng *engine.Engine) error {
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	resp := statusResp{Status: "running"}
+	w.Header().Set("Content-Type", "application/json")
+	pid := 0
 	if s.engine != nil && s.engine.Stats != nil {
-		resp.PID = s.engine.Stats.PID
-		resp.Connections = s.engine.Stats.Connections
+		pid = s.engine.Stats.PID
 	}
-	writeJSON(w, resp)
+	conns := 0
+	if s.engine != nil && s.engine.Stats != nil {
+		conns = s.engine.Stats.Connections
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":      "running",
+		"pid":         pid,
+		"connections": conns,
+	})
 }
 
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 	if r.Method == http.MethodGet {
-		resp := settingsResp{
-			Mode:             "whitelist",
-			WSRefreshInterval: 5,
-			UIConnLimit:      100,
-			DirectConnsLimit: 20,
-		}
-		if cfg := s.engine.GetConfig(); cfg != nil {
-			resp.Mode = cfg.Routing.Mode
-			resp.WSRefreshInterval = cfg.API.WSRefreshInterval
-			if cfg.API.UIConnLimit > 0 {
-				resp.UIConnLimit = cfg.API.UIConnLimit
+		mode := "whitelist"
+		interval := 5
+		connLimit := 100
+		showDirect := false
+		directLimit := 20
+		if s.engine != nil && s.engine.GetConfig() != nil {
+			mode = s.engine.GetConfig().Routing.Mode
+			interval = s.engine.GetConfig().API.WSRefreshInterval
+			if s.engine.GetConfig().API.UIConnLimit > 0 {
+				connLimit = s.engine.GetConfig().API.UIConnLimit
 			}
-			resp.ShowDirectConns = cfg.API.ShowDirectConns
-			if cfg.API.DirectConnsLimit > 0 {
-				resp.DirectConnsLimit = cfg.API.DirectConnsLimit
+			showDirect = s.engine.GetConfig().API.ShowDirectConns
+			if s.engine.GetConfig().API.DirectConnsLimit > 0 {
+				directLimit = s.engine.GetConfig().API.DirectConnsLimit
 			}
 		}
-		writeJSON(w, resp)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"mode":                mode,
+			"ws_refresh_interval": interval,
+			"ui_conn_limit":       connLimit,
+			"show_direct_conns":   showDirect,
+			"direct_conns_limit":  directLimit,
+		})
 		return
 	} else if r.Method == http.MethodPost {
 		var req struct {
@@ -142,24 +94,20 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			DirectConnsLimit  int    `json:"direct_conns_limit"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
-			if req.WSRefreshInterval < 1 {
-				req.WSRefreshInterval = 5
-			}
-			if req.UIConnLimit < 1 {
-				req.UIConnLimit = 100
-			}
-			if req.DirectConnsLimit < 1 {
-				req.DirectConnsLimit = 20
-			}
-			if s.engine != nil {
-				s.engine.UpdateUIConfig(req.WSRefreshInterval, req.UIConnLimit, req.ShowDirectConns, req.DirectConnsLimit)
-				if err := s.engine.UpdateMode(req.Mode, "config.json"); err != nil {
-					log.Printf("[API] ⚠️ 保存配置失败: %v", err)
-				} else {
-					log.Printf("[API] ✅ 已保存设置")
+			if s.engine != nil && s.engine.GetConfig() != nil {
+				if req.WSRefreshInterval < 1 {
+					req.WSRefreshInterval = 5
 				}
+				if req.UIConnLimit < 1 {
+					req.UIConnLimit = 100
+				}
+				if req.DirectConnsLimit < 1 {
+					req.DirectConnsLimit = 20
+				}
+				s.engine.UpdateUIConfig(req.WSRefreshInterval, req.UIConnLimit, req.ShowDirectConns, req.DirectConnsLimit)
 			}
-			writeJSON(w, okResp{Status: "ok"})
+			s.engine.UpdateMode(req.Mode, "config.json")
+			json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
 			return
 		}
 	}
@@ -167,12 +115,15 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 	if r.Method == http.MethodGet {
-		resp := rulesResp{Rules: []config.Rule{}}
-		if cfg := s.engine.GetConfig(); cfg != nil {
-			resp.Rules = cfg.Routing.Rules
+		var rules interface{} = []interface{}{}
+		if s.engine != nil && s.engine.GetConfig() != nil {
+			rules = s.engine.GetConfig().Routing.Rules
 		}
-		writeJSON(w, resp)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"rules": rules,
+		})
 		return
 	} else if r.Method == http.MethodPost {
 		var req struct {
@@ -182,7 +133,7 @@ func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
 			if s.engine != nil {
 				s.engine.UpdateRules(req.Rules, "config.json")
 			}
-			writeJSON(w, okResp{Status: "ok"})
+			json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
 			return
 		}
 	}
@@ -190,15 +141,21 @@ func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpstream(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 	if r.Method == http.MethodGet {
-		resp := upstreamResp{}
-		if cfg := s.engine.GetConfig(); cfg != nil && len(cfg.Outbounds.Servers) > 0 {
-			srv := cfg.Outbounds.Servers[0]
-			resp.Type = srv.Type
-			resp.Address = srv.Address
-			resp.Port = srv.Port
+		var pType, pAddr string
+		var pPort int
+		if s.engine != nil && s.engine.GetConfig() != nil && len(s.engine.GetConfig().Outbounds.Servers) > 0 {
+			srv := s.engine.GetConfig().Outbounds.Servers[0]
+			pType = srv.Type
+			pAddr = srv.Address
+			pPort = srv.Port
 		}
-		writeJSON(w, resp)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"type":    pType,
+			"address": pAddr,
+			"port":    pPort,
+		})
 		return
 	} else if r.Method == http.MethodPost {
 		var req struct {
@@ -210,7 +167,7 @@ func (s *Server) handleUpstream(w http.ResponseWriter, r *http.Request) {
 			if s.engine != nil {
 				s.engine.UpdateUpstream(req.Type, req.Address, req.Port, "config.json")
 			}
-			writeJSON(w, okResp{Status: "ok"})
+			json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
 			return
 		}
 	}
@@ -218,12 +175,13 @@ func (s *Server) handleUpstream(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePerformance(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 	if r.Method == http.MethodGet {
 		var perf config.PerformanceConfig
-		if cfg := s.engine.GetConfig(); cfg != nil {
-			perf = cfg.Performance
+		if s.engine != nil && s.engine.GetConfig() != nil {
+			perf = s.engine.GetConfig().Performance
 		}
-		writeJSON(w, perf)
+		json.NewEncoder(w).Encode(perf)
 		return
 	} else if r.Method == http.MethodPost {
 		var perf config.PerformanceConfig
@@ -238,7 +196,7 @@ func (s *Server) handlePerformance(w http.ResponseWriter, r *http.Request) {
 				s.engine.UpdatePerformance(perf)
 				s.engine.SaveConfig("config.json")
 			}
-			writeJSON(w, okResp{Status: "ok"})
+			json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
 			return
 		}
 	}
