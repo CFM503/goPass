@@ -65,10 +65,37 @@ var (
 	wdErr  error
 )
 
+// stopWinDivertDriver 停止 WinDivert 内核驱动服务，释放 SYS 文件锁
+func stopWinDivertDriver() {
+	scm, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_CONNECT)
+	if err != nil {
+		return
+	}
+	defer windows.CloseServiceHandle(scm)
+	svc, err := windows.OpenService(scm, syscall.StringToUTF16Ptr("WinDivert"), windows.SERVICE_STOP|windows.SERVICE_QUERY_STATUS)
+	if err != nil {
+		return
+	}
+	defer windows.CloseServiceHandle(svc)
+	var status windows.SERVICE_STATUS
+	windows.ControlService(svc, windows.SERVICE_CONTROL_STOP, &status)
+	// 等待驱动停止，最多 2 秒
+	for i := 0; i < 20; i++ {
+		time.Sleep(100 * time.Millisecond)
+		windows.QueryServiceStatus(svc, &status)
+		if status.CurrentState == windows.SERVICE_STOPPED {
+			return
+		}
+	}
+}
+
 // loadWinDivert 加载 WinDivert.dll（仅加载一次）
 // DLL 和 SYS 驱动已嵌入二进制，启动时释放到临时目录
 func loadWinDivert() (*winDivertDLL, error) {
 	wdOnce.Do(func() {
+		// 先停止已运行的 WinDivert 驱动，释放 SYS 文件锁
+		stopWinDivertDriver()
+
 		// 释放嵌入的 WinDivert 文件到临时目录
 		tmpDir := filepath.Join(os.TempDir(), "gopass_wd")
 		if err := os.MkdirAll(tmpDir, 0755); err != nil {
