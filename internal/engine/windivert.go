@@ -65,14 +65,15 @@ var (
 	wdErr  error
 )
 
-// stopWinDivertDriver 停止 WinDivert 内核驱动服务，释放 SYS 文件锁
-func stopWinDivertDriver() {
-	scm, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_CONNECT)
+// stopAndRemoveWinDivertDriver 停止并删除 WinDivert 内核驱动服务，释放 SYS 文件锁
+// 关键：必须删除旧服务，否则 WinDivert DLL 会复用旧的 BINARY_PATH_NAME（指向已不存在的路径）
+func stopAndRemoveWinDivertDriver() {
+	scm, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_CONNECT|windows.SC_MANAGER_CREATE_SERVICE)
 	if err != nil {
 		return
 	}
 	defer windows.CloseServiceHandle(scm)
-	svc, err := windows.OpenService(scm, syscall.StringToUTF16Ptr("WinDivert"), windows.SERVICE_STOP|windows.SERVICE_QUERY_STATUS)
+	svc, err := windows.OpenService(scm, syscall.StringToUTF16Ptr("WinDivert"), windows.SERVICE_STOP|windows.SERVICE_QUERY_STATUS|windows.DELETE)
 	if err != nil {
 		return
 	}
@@ -84,26 +85,49 @@ func stopWinDivertDriver() {
 		time.Sleep(100 * time.Millisecond)
 		windows.QueryServiceStatus(svc, &status)
 		if status.CurrentState == windows.SERVICE_STOPPED {
-			return
+			break
 		}
 	}
+	// 删除旧服务，确保下次 WinDivertOpen 会用新路径重新注册
+	windows.DeleteService(svc)
+	log.Println("[WinDivert] 已清理旧的驱动服务注册")
+}
+
+// mustStatSize 获取文件大小，失败返回 -1
+func mustStatSize(path string) int64 {
+	info, err := os.Stat(path)
+	if err != nil {
+		return -1
+	}
+	return info.Size()
+}
+
+// getExeDir 获取可执行文件所在目录（便携版场景，文件释放到 exe 同目录）
+func getExeDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return os.TempDir()
+	}
+	return filepath.Dir(exe)
 }
 
 // loadWinDivert 加载 WinDivert.dll（仅加载一次）
-// DLL 和 SYS 驱动已嵌入二进制，启动时释放到临时目录
+// DLL 和 SYS 驱动已嵌入二进制，启动时释放到 exe 所在目录
 func loadWinDivert() (*winDivertDLL, error) {
 	wdOnce.Do(func() {
 		// 先停止已运行的 WinDivert 驱动，释放 SYS 文件锁
-		stopWinDivertDriver()
+		stopAndRemoveWinDivertDriver()
 
-		// 释放嵌入的 WinDivert 文件到临时目录
-		tmpDir := filepath.Join(os.TempDir(), "gopass_wd")
-		if err := os.MkdirAll(tmpDir, 0755); err != nil {
-			wdErr = fmt.Errorf("无法创建临时目录: %w", err)
+		// 释放嵌入的 WinDivert 文件到 exe 所在目录（便携版友好）
+		wdDir := filepath.Join(getExeDir(), "gopass_wd")
+		if err := os.MkdirAll(wdDir, 0755); err != nil {
+			wdErr = fmt.Errorf("无法创建驱动目录 %s: %w", wdDir, err)
 			return
 		}
-		dllPath := filepath.Join(tmpDir, "WinDivert.dll")
-		sysPath := filepath.Join(tmpDir, "WinDivert64.sys")
+		dllPath := filepath.Join(wdDir, "WinDivert.dll")
+		sysPath := filepath.Join(wdDir, "WinDivert64.sys")
+
+		log.Printf("[WinDivert] 释放驱动到: %s", wdDir)
 		if err := os.WriteFile(dllPath, windivertDLL, 0755); err != nil {
 			wdErr = fmt.Errorf("无法释放 WinDivert.dll: %w", err)
 			return
@@ -112,6 +136,19 @@ func loadWinDivert() (*winDivertDLL, error) {
 			wdErr = fmt.Errorf("无法释放 WinDivert64.sys: %w", err)
 			return
 		}
+
+		// 写入后立即验证文件存在（防 Windows Defender 拦截）
+		if info, err := os.Stat(dllPath); err != nil || info.Size() == 0 {
+			wdErr = fmt.Errorf("WinDivert.dll 写入后丢失（可能被杀毒软件拦截）: %v", err)
+			return
+		}
+		if info, err := os.Stat(sysPath); err != nil || info.Size() == 0 {
+			wdErr = fmt.Errorf("WinDivert64.sys 写入后丢失（可能被杀毒软件拦截）: %v", err)
+			return
+		}
+		log.Printf("[WinDivert] 驱动文件就绪: DLL=%d bytes, SYS=%d bytes",
+			mustStatSize(dllPath), mustStatSize(sysPath))
+
 		dll, err := windows.LoadDLL(dllPath)
 		if err != nil {
 			wdErr = fmt.Errorf("无法加载 WinDivert.dll: %w\n请确认以管理员权限运行", err)
@@ -149,6 +186,12 @@ func wdOpen(filter string, layer, priority int, flags uint64) (*winDivertHandle,
 	if err != nil {
 		return nil, err
 	}
+
+	wdDir := filepath.Join(getExeDir(), "gopass_wd")
+	log.Printf("[WinDivert] Open: filter=%q, DLL/SYS dir=%s, CWD=%s", filter, wdDir, func() string {
+		d, _ := os.Getwd()
+		return d
+	}())
 
 	filterPtr, err := syscall.BytePtrFromString(filter)
 	if err != nil {
