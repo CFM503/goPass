@@ -128,6 +128,19 @@ func loadWinDivert() (*winDivertDLL, error) {
 		sysPath := filepath.Join(wdDir, "WinDivert64.sys")
 
 		log.Printf("[WinDivert] 释放驱动到: %s", wdDir)
+
+		// 尝试删除旧文件（可能被上一次运行的内核驱动锁定）
+		for i := 0; i < 10; i++ {
+			os.Remove(dllPath)
+			os.Remove(sysPath)
+			// 检查文件是否已释放
+			if _, err := os.Stat(sysPath); os.IsNotExist(err) {
+				break
+			}
+			log.Printf("[WinDivert] 等待旧驱动文件释放... (%d/10)", i+1)
+			time.Sleep(500 * time.Millisecond)
+		}
+
 		if err := os.WriteFile(dllPath, windivertDLL, 0755); err != nil {
 			wdErr = fmt.Errorf("无法释放 WinDivert.dll: %w", err)
 			return
