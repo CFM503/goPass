@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/yourusername/gopass/internal/config"
+	"github.com/CFM503/goPass/internal/config"
 	"golang.org/x/net/proxy"
 )
 

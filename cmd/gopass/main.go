@@ -8,10 +8,10 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/yourusername/gopass/internal/api"
-	"github.com/yourusername/gopass/internal/config"
-	"github.com/yourusername/gopass/internal/engine"
-	"github.com/yourusername/gopass/internal/process"
+	"github.com/CFM503/goPass/internal/api"
+	"github.com/CFM503/goPass/internal/config"
+	"github.com/CFM503/goPass/internal/engine"
+	"github.com/CFM503/goPass/internal/process"
 )
 
 func main() {
@@ -19,7 +19,7 @@ func main() {
 	flag.Parse()
 
 	fmt.Println("=== GoPass 透明代理 ===")
-	fmt.Println("Version: v1.4.4")
+	fmt.Println("Version: v1.4.5")
 	fmt.Printf("PID: %d\n\n", os.Getpid())
 
 	// Load Configuration

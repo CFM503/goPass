@@ -6,7 +6,7 @@
 *.dylib
 
 # Exception: embedded DLL for single-file distribution
-!internal/engine/embed/WinDivert.dll
+!internal/engine/windivert/WinDivert.dll
 
 # Test binary, built with `go test -c`
 *.test

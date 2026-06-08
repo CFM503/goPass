@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/yourusername/gopass/internal/engine"
+	"github.com/CFM503/goPass/internal/engine"
 )
 
 var upgrader = websocket.Upgrader{

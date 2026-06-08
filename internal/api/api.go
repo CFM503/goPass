@@ -6,9 +6,9 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/yourusername/gopass/internal/config"
-	"github.com/yourusername/gopass/internal/engine"
-	"github.com/yourusername/gopass/web"
+	"github.com/CFM503/goPass/internal/config"
+	"github.com/CFM503/goPass/internal/engine"
+	"github.com/CFM503/goPass/web"
 )
 
 type Server struct {

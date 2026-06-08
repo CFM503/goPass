@@ -17,7 +17,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/yourusername/gopass/internal/process"
+	"github.com/CFM503/goPass/internal/process"
 	"golang.org/x/sys/windows"
 )
 

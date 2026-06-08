@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yourusername/gopass/internal/config"
+	"github.com/CFM503/goPass/internal/config"
 )
 
 // Engine 是 GoPass 透明代理的核心
