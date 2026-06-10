@@ -4,6 +4,7 @@
 *.dll
 *.so
 *.dylib
+*.sys
 
 # Exception: embedded DLL for single-file distribution
 !internal/engine/windivert/WinDivert.dll

@@ -65,32 +65,135 @@ var (
 	wdErr  error
 )
 
-// stopAndRemoveWinDivertDriver 停止并删除 WinDivert 内核驱动服务，释放 SYS 文件锁
-// 关键：必须删除旧服务，否则 WinDivert DLL 会复用旧的 BINARY_PATH_NAME（指向已不存在的路径）
-func stopAndRemoveWinDivertDriver() {
+// stopAndRemoveService 停止并删除指定的内核驱动服务
+func stopAndRemoveService(name string) {
 	scm, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_CONNECT|windows.SC_MANAGER_CREATE_SERVICE)
 	if err != nil {
+		log.Printf("[WinDivert] 打开服务管理器失败: %v（需要管理员权限）", err)
 		return
 	}
 	defer windows.CloseServiceHandle(scm)
-	svc, err := windows.OpenService(scm, syscall.StringToUTF16Ptr("WinDivert"), windows.SERVICE_STOP|windows.SERVICE_QUERY_STATUS|windows.DELETE)
+	svc, err := windows.OpenService(scm, syscall.StringToUTF16Ptr(name), windows.SERVICE_STOP|windows.SERVICE_QUERY_STATUS|windows.DELETE)
 	if err != nil {
+		// 服务不存在是正常的
 		return
 	}
 	defer windows.CloseServiceHandle(svc)
 	var status windows.SERVICE_STATUS
-	windows.ControlService(svc, windows.SERVICE_CONTROL_STOP, &status)
-	// 等待驱动停止，最多 2 秒
-	for i := 0; i < 20; i++ {
+	if err := windows.ControlService(svc, windows.SERVICE_CONTROL_STOP, &status); err != nil {
+		// 如果服务本就已经停止，ControlService 会报错，在此忽略即可
+	}
+	// 等待驱动停止，最多 5 秒（内核驱动释放文件需要时间）
+	stopped := false
+	for i := 0; i < 50; i++ {
 		time.Sleep(100 * time.Millisecond)
-		windows.QueryServiceStatus(svc, &status)
+		if err := windows.QueryServiceStatus(svc, &status); err != nil {
+			break
+		}
 		if status.CurrentState == windows.SERVICE_STOPPED {
+			stopped = true
 			break
 		}
 	}
+	if !stopped {
+		log.Printf("[WinDivert] 驱动服务 %s 未能在 5 秒内停止（当前状态: %d）", name, status.CurrentState)
+	}
 	// 删除旧服务，确保下次 WinDivertOpen 会用新路径重新注册
-	windows.DeleteService(svc)
-	log.Println("[WinDivert] 已清理旧的驱动服务注册")
+	if err := windows.DeleteService(svc); err != nil {
+		log.Printf("[WinDivert] 删除服务 %s 注册失败: %v", name, err)
+	} else {
+		log.Printf("[WinDivert] 已清理旧的驱动服务注册: %s", name)
+	}
+	// 服务停止后，内核可能需要额外时间释放文件句柄
+	if stopped {
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+// stopAndRemoveWinDivertDriver 停止并删除 WinDivert 和 WinDivert14 内核驱动服务，释放 SYS 文件锁
+// 关键：必须删除旧服务，否则 WinDivert DLL 会复用旧的 BINARY_PATH_NAME（指向已不存在的路径）
+func stopAndRemoveWinDivertDriver() {
+	stopAndRemoveService("WinDivert")
+	stopAndRemoveService("WinDivert14")
+}
+
+// CleanUpDependencies 停止并删除 WinDivert 驱动服务，并清理当前目录下的依赖文件
+func CleanUpDependencies() {
+	log.Println("[WinDivert] 正在执行运行前依赖项清理...")
+	stopAndRemoveWinDivertDriver()
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "."
+	}
+	dllPath := filepath.Join(cwd, "WinDivert.dll")
+	sysPath := filepath.Join(cwd, "WinDivert64.sys")
+	tmpPath := filepath.Join(cwd, "WinDivert64.sys.tmp")
+
+	// 尝试清理 DLL 和 SYS 文件
+	if err := os.Remove(dllPath); err == nil {
+		log.Println("[WinDivert] 已清理旧的 WinDivert.dll")
+	}
+	if err := os.Remove(sysPath); err == nil {
+		log.Println("[WinDivert] 已清理旧的 WinDivert64.sys")
+	}
+	if err := os.Remove(tmpPath); err == nil {
+		log.Println("[WinDivert] 已清理旧的 WinDivert64.sys.tmp")
+	}
+}
+
+// extractSysFile 释放 WinDivert64.sys，使用多种策略处理文件锁定
+// 策略 1: 直接 os.WriteFile（覆盖写入）
+// 策略 2: os.OpenFile O_WRONLY|O_TRUNC（仅截断，不删除）
+// 策略 3: 写入临时文件 + MoveFileEx 原子替换
+func extractSysFile(targetPath string, data []byte) error {
+	// 策略 1: 直接写入（如果文件不存在或未被锁定，这会成功）
+	if err := os.WriteFile(targetPath, data, 0755); err == nil {
+		log.Printf("[WinDivert] SYS 文件直接写入成功")
+		return nil
+	} else {
+		log.Printf("[WinDivert] 直接写入失败: %v", err)
+	}
+
+	// 策略 2: 尝试以写入+截断模式打开（不删除文件，仅覆盖内容）
+	if f, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_TRUNC, 0755); err == nil {
+		if _, err := f.Write(data); err == nil {
+			f.Close()
+			log.Printf("[WinDivert] SYS 文件截断写入成功")
+			return nil
+		}
+		f.Close()
+		log.Printf("[WinDivert] 截断写入失败: %v", err)
+	} else {
+		log.Printf("[WinDivert] 以写入模式打开失败: %v", err)
+	}
+
+	// 策略 3: 写入临时文件 + MoveFileEx 原子替换
+	// Windows 上 MoveFileEx 可以替换被其他进程以 FILE_SHARE_READ 打开的文件
+	tmpPath := targetPath + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0755); err != nil {
+		return fmt.Errorf("写入临时文件失败: %w", err)
+	}
+
+	// MOVEFILE_REPLACE_EXISTING = 1, MOVEFILE_COPY_ALLOWED = 2
+	kernel32 := syscall.NewLazyDLL("kernel32.dll")
+	moveFileEx := kernel32.NewProc("MoveFileExW")
+	srcPtr, _ := syscall.UTF16PtrFromString(tmpPath)
+	dstPtr, _ := syscall.UTF16PtrFromString(targetPath)
+	ret, _, err := moveFileEx.Call(
+		uintptr(unsafe.Pointer(srcPtr)),
+		uintptr(unsafe.Pointer(dstPtr)),
+		uintptr(1|2), // MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED
+	)
+	if ret != 0 {
+		log.Printf("[WinDivert] SYS 文件原子替换成功")
+		return nil
+	}
+
+	// 清理临时文件
+	os.Remove(tmpPath)
+	return fmt.Errorf("所有策略均失败（直接写入、截断写入、原子替换），最后错误: %w\n"+
+		"文件可能被杀毒软件独占锁定，请将 %s 目录加入白名单", err, filepath.Dir(targetPath))
 }
 
 // mustStatSize 获取文件大小，失败返回 -1
@@ -118,35 +221,45 @@ func loadWinDivert() (*winDivertDLL, error) {
 		// 先停止已运行的 WinDivert 驱动，释放 SYS 文件锁
 		stopAndRemoveWinDivertDriver()
 
-		// 释放嵌入的 WinDivert 文件到 exe 所在目录（便携版友好）
-		wdDir := filepath.Join(getExeDir(), "gopass_wd")
-		if err := os.MkdirAll(wdDir, 0755); err != nil {
-			wdErr = fmt.Errorf("无法创建驱动目录 %s: %w", wdDir, err)
-			return
+		// 释放嵌入的 WinDivert 文件到运行的当前目录
+		wdDir, err := os.Getwd()
+		if err != nil {
+			wdDir = "."
 		}
 		dllPath := filepath.Join(wdDir, "WinDivert.dll")
 		sysPath := filepath.Join(wdDir, "WinDivert64.sys")
 
 		log.Printf("[WinDivert] 释放驱动到: %s", wdDir)
 
-		// 尝试删除旧文件（可能被上一次运行的内核驱动锁定）
-		for i := 0; i < 10; i++ {
+		// 尝试删除旧文件（可能被上一次运行的内核驱动或杀毒软件锁定）
+		for i := 0; i < 15; i++ {
 			os.Remove(dllPath)
 			os.Remove(sysPath)
 			// 检查文件是否已释放
 			if _, err := os.Stat(sysPath); os.IsNotExist(err) {
+				log.Printf("[WinDivert] 旧驱动文件已释放")
 				break
 			}
-			log.Printf("[WinDivert] 等待旧驱动文件释放... (%d/10)", i+1)
-			time.Sleep(500 * time.Millisecond)
+			if i > 0 && i%3 == 0 {
+				// 每 3 次重试，再次尝试停止驱动服务（可能上次停止未成功）
+				log.Printf("[WinDivert] 文件仍被锁定，重试停止驱动服务...")
+				stopAndRemoveWinDivertDriver()
+			}
+			log.Printf("[WinDivert] 等待旧驱动文件释放... (%d/15)", i+1)
+			time.Sleep(1 * time.Second)
 		}
 
+		// DLL 通常不会被锁定，直接写入
 		if err := os.WriteFile(dllPath, windivertDLL, 0755); err != nil {
 			wdErr = fmt.Errorf("无法释放 WinDivert.dll: %w", err)
 			return
 		}
-		if err := os.WriteFile(sysPath, windivertSYS, 0755); err != nil {
-			wdErr = fmt.Errorf("无法释放 WinDivert64.sys: %w", err)
+
+		// SYS 文件可能被杀毒软件或内核锁定，尝试多种策略
+		if err := extractSysFile(sysPath, windivertSYS); err != nil {
+			wdErr = fmt.Errorf("无法释放 WinDivert64.sys: %w\n"+
+				"可能原因：杀毒软件正在扫描，或内核驱动未完全释放\n"+
+				"请将当前目录加入杀毒软件白名单后重试，或重启系统", err)
 			return
 		}
 
@@ -200,7 +313,10 @@ func wdOpen(filter string, layer, priority int, flags uint64) (*winDivertHandle,
 		return nil, err
 	}
 
-	wdDir := filepath.Join(getExeDir(), "gopass_wd")
+	wdDir, err := os.Getwd()
+	if err != nil {
+		wdDir = "."
+	}
 	log.Printf("[WinDivert] Open: filter=%q, DLL/SYS dir=%s, CWD=%s", filter, wdDir, func() string {
 		d, _ := os.Getwd()
 		return d
