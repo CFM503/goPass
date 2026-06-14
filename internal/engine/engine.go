@@ -295,6 +295,8 @@ func (e *Engine) Stop() {
 	if e.tproxy != nil {
 		e.tproxy.listener.Close() // TProxy 本身没有 Close 方法，需要关也是关 listener
 	}
+	// 彻底清理 WinDivert 驱动和文件，防止下次启动时遇到残留锁定
+	CleanUpOnShutdown()
 }
 
 // UpdateMode 更新代理模式并保存配置
