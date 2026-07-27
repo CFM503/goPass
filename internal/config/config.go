@@ -106,9 +106,9 @@ func DefaultConfig() *Config {
 			},
 		},
 		Performance: PerformanceConfig{
-			BufferSize:      262144,
+			BufferSize:      32768,
 			TCPNoDelay:      true,
-			TCPSocketBuffer: 4194304,
+			TCPSocketBuffer: 0,
 			BidirectWait:    true,
 			TCPKeepAlive:    true,
 			KeepAlivePeriod: 15,

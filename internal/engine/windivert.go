@@ -513,10 +513,11 @@ func NewInterceptor(mode string, whitelist []string, tracker *ConnTracker, proxy
 func (i *Interceptor) buildFilter() string {
 	// 拦截：
 	// 1. 出站 TCP (准备劫持)
-	// 2. 出站 IPv6 (防泄露，由于目前上游大多不走 v6，防止双栈解析回退直连)
-	// 3. TProxy 返回的 TCP 包 (反向 NAT)
-	// 注意：彻底删除了针对 UDP(QUIC) 443 的 Drop 规则，将兜底报 RST/ICMP 控制权还给操作系统，防止假死！
+	// 2. 出站 UDP 443 (防止 QUIC 导致客户端双 IP / Cloudflare 验证失败)
+	// 3. 出站 IPv6 (防泄露)
+	// 4. TProxy 返回的 TCP 包 (反向 NAT)
 	filter := fmt.Sprintf("(outbound and ip and tcp and ip.DstAddr != 127.0.0.1) or "+
+		"(outbound and ip and udp and udp.DstPort == 443) or "+
 		"(outbound and ipv6) or "+
 		"(outbound and ip and tcp and tcp.SrcPort == %d)", i.tproxyPort)
 
@@ -782,6 +783,13 @@ func (i *Interceptor) handlePacket(pkt []byte, addr *winDivertAddress) {
 		if h != nil {
 			h.Send(pkt, addr)
 		}
+		return
+	}
+
+	// 如果是受控/代理进程发出的 UDP 443 (QUIC) 报文，直接静默丢弃！
+	// 强制浏览器瞬间退回 TCP HTTP/2，防止 QUIC 泄露导致的 Cloudflare IP 拆分与验证失败
+	isUDP := (pkt[9] == 17)
+	if isUDP {
 		return
 	}
 

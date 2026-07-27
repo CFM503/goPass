@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"log"
@@ -20,39 +21,47 @@ var bufferPool = sync.Pool{
 	},
 }
 
-// readTLSClientHello reads a complete TLS ClientHello record.
-//
-// [v1.1.7 FIX] Chrome Kyber post-quantum makes ClientHello > MTU, causing TCP fragmentation.
-//
-//	Old single conn.Read() only got fragment 1, SNI extraction failed, YouTube showed error.
-//
-// [v1.1.9 FIX] Dynamic buffer alloc for records > 4096 bytes (old pool buffer silently dropped them).
-func readTLSClientHello(conn net.Conn) ([]byte, error) {
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+// readTLSClientHello reads and extracts the SNI from a TLS ClientHello.
+// CRITICAL FIX: Returns ALL bytes read from conn (readBuf) regardless of whether SNI extraction
+// succeeded or failed. This guarantees ZERO DATA LOSS so the TLS handshake is never corrupted.
+func readTLSClientHello(conn net.Conn) (readBuf []byte, sni string, err error) {
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	defer conn.SetReadDeadline(time.Time{})
 
-	// Step 1: TLS Record header (5 bytes)
+	var buf bytes.Buffer
+
+	// Step 1: Read TLS Record header (5 bytes)
 	header := make([]byte, 5)
-	if _, err := io.ReadFull(conn, header); err != nil {
-		return nil, err
+	n, errRead := io.ReadFull(conn, header)
+	if n > 0 {
+		buf.Write(header[:n])
 	}
+	if errRead != nil || n < 5 {
+		return buf.Bytes(), "", fmt.Errorf("read header error: %w", errRead)
+	}
+
 	if header[0] != 22 {
-		return nil, fmt.Errorf("not TLS handshake: type=%d", header[0])
+		return buf.Bytes(), "", fmt.Errorf("not TLS handshake: type=%d", header[0])
 	}
 
 	recordLen := int(header[3])<<8 | int(header[4])
 	if recordLen <= 0 || recordLen > 16384 {
-		return nil, fmt.Errorf("invalid TLS record length: %d", recordLen)
+		return buf.Bytes(), "", fmt.Errorf("invalid TLS record length: %d", recordLen)
 	}
 
 	// Step 2: Read full record body (dynamic alloc for Kyber large records)
-	data := make([]byte, 5+recordLen)
-	copy(data, header)
-	if _, err := io.ReadFull(conn, data[5:]); err != nil {
-		return nil, err
+	body := make([]byte, recordLen)
+	nBody, errBody := io.ReadFull(conn, body)
+	if nBody > 0 {
+		buf.Write(body[:nBody])
+	}
+	if errBody != nil {
+		return buf.Bytes(), "", fmt.Errorf("read record body error: %w", errBody)
 	}
 
-	conn.SetReadDeadline(time.Time{})
-	return data, nil
+	allData := buf.Bytes()
+	foundSNI, sniErr := ExtractSNI(allData)
+	return allData, foundSNI, sniErr
 }
 
 // TProxy 是本地透明代理 TCP 监听器
@@ -65,6 +74,10 @@ type TProxy struct {
 	proxyType string
 	proxyAddr string
 	proxyMu   sync.RWMutex
+
+	// Upstream dialer cache
+	cachedDialer proxy.Dialer
+	cachedKey    string
 
 	// [v1.2.1] Hot-reloadable performance settings
 	bufferSize      int
@@ -124,7 +137,39 @@ func (tp *TProxy) UpdateUpstream(pType, pAddr string) {
 	defer tp.proxyMu.Unlock()
 	tp.proxyType = pType
 	tp.proxyAddr = pAddr
+	tp.cachedDialer = nil
+	tp.cachedKey = ""
 	log.Printf("[TProxy] 上游代理已热切换为: %s -> %s", pType, pAddr)
+}
+
+func (tp *TProxy) getDialer(pType, pAddr string) (proxy.Dialer, error) {
+	tp.proxyMu.RLock()
+	key := pType + "://" + pAddr
+	if tp.cachedDialer != nil && tp.cachedKey == key {
+		d := tp.cachedDialer
+		tp.proxyMu.RUnlock()
+		return d, nil
+	}
+	tp.proxyMu.RUnlock()
+
+	tp.proxyMu.Lock()
+	defer tp.proxyMu.Unlock()
+	if tp.cachedDialer != nil && tp.cachedKey == key {
+		return tp.cachedDialer, nil
+	}
+
+	var d proxy.Dialer
+	var err error
+	if pType == "http" {
+		d, err = NewHTTPProxy(pAddr, "", "", proxy.Direct)
+	} else {
+		d, err = proxy.SOCKS5("tcp", pAddr, nil, proxy.Direct)
+	}
+	if err == nil {
+		tp.cachedDialer = d
+		tp.cachedKey = key
+	}
+	return d, err
 }
 
 // Accept 开始接受连接（阻塞）
@@ -192,20 +237,16 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 
 	targetAddr := fmt.Sprintf("%s:%d", target.OrigDstIP.String(), target.OrigDstPort)
 
-	// SNI Sniffing
+	// SNI Sniffing (Zero-Data-Loss)
 	var peekBuf []byte
 	isHTTPS := target.OrigDstPort == 443
 
 	if isHTTPS {
+		var sni string
 		var err error
-		peekBuf, err = readTLSClientHello(conn)
-		if err != nil {
-			_ = err
-		}
-		if len(peekBuf) > 0 {
-			if sni, errSNI := ExtractSNI(peekBuf); errSNI == nil && sni != "" {
-				targetAddr = fmt.Sprintf("%s:%d", sni, target.OrigDstPort)
-			}
+		peekBuf, sni, err = readTLSClientHello(conn)
+		if err == nil && sni != "" {
+			targetAddr = fmt.Sprintf("%s:%d", sni, target.OrigDstPort)
 		}
 	}
 
@@ -214,15 +255,7 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 	pAddr := tp.proxyAddr
 	tp.proxyMu.RUnlock()
 
-	var dialer proxy.Dialer
-	var errDialer error
-
-	if pType == "http" {
-		dialer, errDialer = NewHTTPProxy(pAddr, "", "", proxy.Direct)
-	} else {
-		dialer, errDialer = proxy.SOCKS5("tcp", pAddr, nil, proxy.Direct)
-	}
-
+	dialer, errDialer := tp.getDialer(pType, pAddr)
 	if errDialer != nil {
 		log.Printf("[TProxy] 代理 Dialer 创建失败: %v", errDialer)
 		return
@@ -235,7 +268,7 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 	}
 	defer remote.Close()
 
-	// [v1.2.1] Apply dynamic TCP tuning using live performance settings
+	// Dynamic TCP tuning
 	tuneConn := func(c net.Conn) {
 		if tc, ok := c.(*net.TCPConn); ok {
 			tc.SetNoDelay(noDelay)
@@ -246,6 +279,7 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 			if tcpLinger >= 0 {
 				tc.SetLinger(tcpLinger)
 			}
+			// Only override socket buffer if > 0. If <= 0, retain Windows OS Auto-Tuning!
 			if sockBuf > 0 {
 				tc.SetReadBuffer(sockBuf)
 				tc.SetWriteBuffer(sockBuf)
@@ -255,6 +289,7 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 	tuneConn(conn)
 	tuneConn(remote)
 
+	// Write buffered ClientHello bytes to remote
 	if len(peekBuf) > 0 {
 		_, err := remote.Write(peekBuf)
 		if err != nil {
@@ -293,7 +328,6 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 					atomic.AddInt64(&tp.stats.RxBytes, int64(n))
 				}
 				if _, errWrite := conn.Write(copyBuf[:n]); errWrite != nil {
-					// [FIX 2] Data Blackhole: if we can't write to local anymore, break and half-close
 					if tc, ok := conn.(*net.TCPConn); ok {
 						tc.CloseWrite()
 					}
@@ -301,8 +335,6 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 				}
 			}
 			if err != nil {
-				// [FIX 1] TCP Half-Close: when remote finishes sending, close local's receiving end
-				// This prevents local from hanging on Read() forever.
 				if tc, ok := conn.(*net.TCPConn); ok {
 					tc.CloseWrite()
 				}
@@ -323,7 +355,6 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 					atomic.AddInt64(&tp.stats.TxBytes, int64(n))
 				}
 				if _, errWrite := remote.Write(copyBuf[:n]); errWrite != nil {
-					// [FIX 2] Data Blackhole: if we can't write to remote anymore, break and half-close
 					if tc, ok := remote.(*net.TCPConn); ok {
 						tc.CloseWrite()
 					}
@@ -331,7 +362,6 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 				}
 			}
 			if err != nil {
-				// [FIX 1] TCP Half-Close: when local finishes sending, close remote's receiving end
 				if tc, ok := remote.(*net.TCPConn); ok {
 					tc.CloseWrite()
 				}

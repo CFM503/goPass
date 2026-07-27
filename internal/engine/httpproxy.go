@@ -67,7 +67,7 @@ func (d *HTTPProxyDialer) Dial(network, addr string) (c net.Conn, err error) {
 		basicAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte(auth))
 		req.Header.Set("Proxy-Authorization", basicAuth)
 	}
-	req.Header.Set("User-Agent", "GoPass/1.4.6")
+	req.Header.Set("User-Agent", "GoPass/1.4.8")
 
 	err = req.Write(c)
 	if err != nil {

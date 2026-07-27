@@ -20,10 +20,12 @@ import (
 var (
 	iphlpapi                = syscall.NewLazyDLL("iphlpapi.dll")
 	procGetExtendedTcpTable = iphlpapi.NewProc("GetExtendedTcpTable")
+	procGetExtendedUdpTable = iphlpapi.NewProc("GetExtendedUdpTable")
 )
 
 const (
 	TCP_TABLE_OWNER_PID_ALL = 5
+	UDP_TABLE_OWNER_PID     = 1
 	AF_INET                 = 2
 )
 
@@ -37,7 +39,14 @@ type MIB_TCPROW_OWNER_PID struct {
 	OwningPid  uint32
 }
 
-// ========== 全局 TCP 表缓存 ==========
+// MIB_UDPROW_OWNER_PID 结构体
+type MIB_UDPROW_OWNER_PID struct {
+	LocalAddr uint32
+	LocalPort uint32
+	OwningPid uint32
+}
+
+// ========== 全局 TCP/UDP 表缓存 ==========
 var (
 	portCache   map[uint16]uint32
 	portCacheMu sync.RWMutex
@@ -56,8 +65,11 @@ func InitNetstatCache(interval int) {
 	}()
 }
 
-// refreshPortCache 一次性扫描整张 TCP 表，写入缓存 map
+// refreshPortCache 一次性扫描整张 TCP/UDP 表，写入缓存 map
 func refreshPortCache() {
+	newCache := make(map[uint16]uint32)
+
+	// 1. 扫描 TCP 表
 	var size uint32
 	procGetExtendedTcpTable.Call(
 		0,
@@ -67,33 +79,58 @@ func refreshPortCache() {
 		uintptr(TCP_TABLE_OWNER_PID_ALL),
 		0,
 	)
-	if size == 0 {
-		return
+	if size > 0 {
+		buf := make([]byte, size)
+		ret, _, _ := procGetExtendedTcpTable.Call(
+			uintptr(unsafe.Pointer(&buf[0])),
+			uintptr(unsafe.Pointer(&size)),
+			0,
+			uintptr(AF_INET),
+			uintptr(TCP_TABLE_OWNER_PID_ALL),
+			0,
+		)
+		if ret == 0 {
+			numEntries := *(*uint32)(unsafe.Pointer(&buf[0]))
+			entrySize := uint32(unsafe.Sizeof(MIB_TCPROW_OWNER_PID{}))
+			for i := uint32(0); i < numEntries; i++ {
+				offset := 4 + i*entrySize
+				entry := (*MIB_TCPROW_OWNER_PID)(unsafe.Pointer(&buf[offset]))
+				port := uint16(entry.LocalPort>>8) | uint16(entry.LocalPort<<8)
+				newCache[port] = entry.OwningPid
+			}
+		}
 	}
 
-	buf := make([]byte, size)
-	ret, _, _ := procGetExtendedTcpTable.Call(
-		uintptr(unsafe.Pointer(&buf[0])),
-		uintptr(unsafe.Pointer(&size)),
+	// 2. 扫描 UDP 表
+	var udpSize uint32
+	procGetExtendedUdpTable.Call(
+		0,
+		uintptr(unsafe.Pointer(&udpSize)),
 		0,
 		uintptr(AF_INET),
-		uintptr(TCP_TABLE_OWNER_PID_ALL),
+		uintptr(UDP_TABLE_OWNER_PID),
 		0,
 	)
-	if ret != 0 {
-		return
-	}
-
-	numEntries := *(*uint32)(unsafe.Pointer(&buf[0]))
-	entrySize := uint32(unsafe.Sizeof(MIB_TCPROW_OWNER_PID{}))
-
-	newCache := make(map[uint16]uint32, numEntries)
-	for i := uint32(0); i < numEntries; i++ {
-		offset := 4 + i*entrySize
-		entry := (*MIB_TCPROW_OWNER_PID)(unsafe.Pointer(&buf[offset]))
-		// 网络字节序端口 → 主机字节序
-		port := uint16(entry.LocalPort>>8) | uint16(entry.LocalPort<<8)
-		newCache[port] = entry.OwningPid
+	if udpSize > 0 {
+		buf := make([]byte, udpSize)
+		ret, _, _ := procGetExtendedUdpTable.Call(
+			uintptr(unsafe.Pointer(&buf[0])),
+			uintptr(unsafe.Pointer(&udpSize)),
+			0,
+			uintptr(AF_INET),
+			uintptr(UDP_TABLE_OWNER_PID),
+			0,
+		)
+		if ret == 0 {
+			numEntries := *(*uint32)(unsafe.Pointer(&buf[0]))
+			entrySize := uint32(unsafe.Sizeof(MIB_UDPROW_OWNER_PID{}))
+			for i := uint32(0); i < numEntries; i++ {
+				offset := 4 + i*entrySize
+				entry := (*MIB_UDPROW_OWNER_PID)(unsafe.Pointer(&buf[offset]))
+				port := uint16(entry.LocalPort>>8) | uint16(entry.LocalPort<<8)
+				newCache[port] = entry.OwningPid
+			}
+		}
 	}
 
 	portCacheMu.Lock()

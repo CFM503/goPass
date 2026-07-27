@@ -32,8 +32,8 @@ A high-performance, Zero-Copy transparent proxy for Windows, tailored for extrem
 ## 📥 Installation & Usage / 安装与使用
 
 1. **Download / 下载**  
-   Compile from source using `go build` or download the ultra-slim release executable `gopass_1.1.6.exe`.  
-   根据源码自行编译，或直接下载极限瘦身的成品执行文件 `gopass_1.1.6.exe`。
+   Compile from source using `go build` or download the ultra-slim release executable `gopass_1.4.8.exe`.  
+   根据源码自行编译，或直接下载极限瘦身的成品执行文件 `gopass_1.4.8.exe`。
 
 2. **Run as Administrator / 提权运行**  
    ⚠️ GoPass **MUST** be run as Administrator because the `WinDivert` driver requires high-level system permissions.  
@@ -50,6 +50,18 @@ A high-performance, Zero-Copy transparent proxy for Windows, tailored for extrem
 5. **Whitelist Processes / 进程白名单**  
    By default, GoPass operates in `Whitelist` mode. Go to the `Dashboard` and click **Add to Rules** for applications you wish to route through the proxy.  
    默认处于 `Whitelist（白名单）` 劫持模式。在仪表盘看见目标软件后，轻轻一点 **Add to Rules**，流量即刻起飞。
+
+---
+
+## 📝 Release Notes / 更新日志 (v1.4.8)
+
+- **🛡️ 修复 Cloudflare 人机验证无限循环问题**：
+  - 重构 TLS 嗅探器为 Zero-Data-Loss 零丢失模式，无论 SNI 提取与否均 100% 完整保留与补发 TLS 首包。
+  - 新增受控进程出站 UDP 443 (QUIC) 丢包机制，消除 QUIC (本地IP) 与 TCP (代理IP) 双 IP 冲突，强制浏览器平滑退回 100% TCP 代理模式。
+- **⚡ 极致性能与转发提速**：
+  - 解封 Windows 原生 TCP Window Auto-Tuning 动态窗口调优算法，大幅拉升大文件下载与并发吞吐量。
+  - 缓冲区深度优化为 32KB/64KB，精准匹配 CPU L1/L2 缓存行。
+  - 全局复用 Upstream Proxy Dialer，降低高并发建连延迟与 GC 锁开销。
 
 ---
 
