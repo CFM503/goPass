@@ -32,8 +32,8 @@ A high-performance, Zero-Copy transparent proxy for Windows, tailored for extrem
 ## 📥 Installation & Usage / 安装与使用
 
 1. **Download / 下载**  
-   Compile from source using `go build` or download the ultra-slim release executable `gopass_1.4.8.exe`.  
-   根据源码自行编译，或直接下载极限瘦身的成品执行文件 `gopass_1.4.8.exe`。
+   Compile from source using `go build` or download the ultra-slim release executable `gopass_1.4.9.exe`.  
+   根据源码自行编译，或直接下载极限瘦身的成品执行文件 `gopass_1.4.9.exe`。
 
 2. **Run as Administrator / 提权运行**  
    ⚠️ GoPass **MUST** be run as Administrator because the `WinDivert` driver requires high-level system permissions.  
@@ -53,14 +53,16 @@ A high-performance, Zero-Copy transparent proxy for Windows, tailored for extrem
 
 ---
 
-## 📝 Release Notes / 更新日志 (v1.4.8)
+## 📝 Release Notes / 更新日志 (v1.4.9)
 
-- **🛡️ 修复 Cloudflare 人机验证无限循环问题**：
-  - 重构 TLS 嗅探器为 Zero-Data-Loss 零丢失模式，无论 SNI 提取与否均 100% 完整保留与补发 TLS 首包。
-  - 新增受控进程出站 UDP 443 (QUIC) 丢包机制，消除 QUIC (本地IP) 与 TCP (代理IP) 双 IP 冲突，强制浏览器平滑退回 100% TCP 代理模式。
-- **⚡ 极致性能与转发提速**：
-  - 解封 Windows 原生 TCP Window Auto-Tuning 动态窗口调优算法，大幅拉升大文件下载与并发吞吐量。
-  - 缓冲区深度优化为 32KB/64KB，精准匹配 CPU L1/L2 缓存行。
+- **🧩 完美解决 Cloudflare Turnstile "卡住？故障" 循环**：
+  - 深度扩充 `netstat.go` 进程探测能力，全量补齐 Windows UDP 端口映射表 (`GetExtendedUdpTable`) 动态检索。
+  - 解决先前因 UDP 端口 PID 未查到而导致的 QUIC 验证数据包走本地宽带 IP 泄露问题，精准拦截受控进程出站 UDP 443，使 Cloudflare 人机验证能够在 0.5 秒内秒过。
+- **🛡️ Zero-Data-Loss TLS SNI 嗅探器**：
+  - 无论 SNI 提取结果或分片与否，100% 完整保留并透传 TLS ClientHello 报文，彻底避免远端服务器因首包缺失而中断 SSL 握手。
+- **⚡ 极致转发与吞吐提速**：
+  - 解封 Windows 原生 TCP Window Auto-Tuning 动态窗口调优算法，大幅提升大文件下载与并发吞吐。
+  - 单次内存缓冲区调整为 CPU L1/L2 Cache 友好的 32KB/64KB 组合。
   - 全局复用 Upstream Proxy Dialer，降低高并发建连延迟与 GC 锁开销。
 
 ---
