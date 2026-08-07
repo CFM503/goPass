@@ -25,3 +25,10 @@ go.work.sum
 # GoPass specific
 config.json
 release/
+
+# Geo rule files (optional disk overrides, downloaded via .tools\download.ps1 or UI "Update Rule Files")
+geosite.dat
+geoip.dat
+.tools/*.dat
+
+# Embedded rule snapshots ARE tracked (internal/engine/rules/*.txt) — do not ignore.

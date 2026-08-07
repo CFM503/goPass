@@ -32,8 +32,8 @@ A high-performance, Zero-Copy transparent proxy for Windows, tailored for extrem
 ## 📥 Installation & Usage / 安装与使用
 
 1. **Download / 下载**  
-   Compile from source using `go build` or download the ultra-slim release executable `gopass_1.4.9.exe`.  
-   根据源码自行编译，或直接下载极限瘦身的成品执行文件 `gopass_1.4.9.exe`。
+   Compile from source using `go build` or download the ultra-slim release executable `gopass_1.5.0.exe`.  
+   根据源码自行编译，或直接下载极限瘦身的成品执行文件 `gopass_1.5.0.exe`。
 
 2. **Run as Administrator / 提权运行**  
    ⚠️ GoPass **MUST** be run as Administrator because the `WinDivert` driver requires high-level system permissions.  
@@ -53,6 +53,18 @@ A high-performance, Zero-Copy transparent proxy for Windows, tailored for extrem
 
 ---
 
+## 📝 Release Notes / 更新日志 (v1.5.0)
+
+- **🌏 新增「绝对分流」Split Routing（中国站直连 / 国外站强制代理）**：
+  - 基于真实目标的地理分流：SNI 域名（geosite:cn）优先，其次目标 IP（geoip:cn）；中国站强制直连，国外站强制走上游代理。
+  - 支持 `geo` / `process` / `both` 三种模式与可配置优先级（`geo_priority`），与原有进程白名单无缝共存、热重载。
+  - **🛡️ 零中国痕迹**：真实 IP 绝不泄漏（代理失败不直连回退）、DNS 中继杜绝系统/DoH/DoT 泄漏（国外域名经上游代理走 DoT 解析）、国外 UDP（QUIC/STUN/TURN）一律丢弃、IPv6 默认全屏蔽。
+  - **📦 规则内置**：geosite:cn（6,417 条域名）与 geoip:cn（8,070 个 IPv4 网段）经 `//go:embed` 直接编译进二进制，开箱即用；磁盘规则文件存在时优先加载（支持在线更新 / 自定义），删除磁盘文件即恢复内置版本。
+  - 规则文件在线更新（Web UI 一键 / `auto_update_hours` 定时），支持 v2ray geosite/geoip `.dat`、纯文本列表、MaxMind GeoLite2 CSV。
+  - Web UI `Settings → Split Routing` 面板：开关、模式、优先级、IPv6/UDP 策略、DNS 中继、自定义直连/代理列表、规则更新与加载统计。
+
+---
+
 ## 📝 Release Notes / 更新日志 (v1.4.9)
 
 - **🧩 完美解决 Cloudflare Turnstile "卡住？故障" 循环**：
@@ -64,6 +76,71 @@ A high-performance, Zero-Copy transparent proxy for Windows, tailored for extrem
   - 解封 Windows 原生 TCP Window Auto-Tuning 动态窗口调优算法，大幅提升大文件下载与并发吞吐。
   - 单次内存缓冲区调整为 CPU L1/L2 Cache 友好的 32KB/64KB 组合。
   - 全局复用 Upstream Proxy Dialer，降低高并发建连延迟与 GC 锁开销。
+
+---
+
+## 🌏 Split Routing (绝对分流) — 中国站直连 / 国外站强制代理
+
+GoPass 新增**基于目标地理位置的绝对分流**：中国大陆网站/IP 强制直连，中国以外网站/IP 强制走上游代理。分流决策基于**真实目标**（优先 TLS SNI 域名，其次目标 IP），而非客户端进程。
+
+### 配置（config.json）
+
+> 本项目配置为 JSON 格式；字段名与下列 YAML 完全一致，直接照抄到 `"split": {...}` 即可。
+
+```yaml
+split:
+  enabled: true            # 总开关
+  mode: "both"             # geo（纯地理）| process（纯进程白名单）| both（同时启用）
+  geo_priority: true       # true=地理分流优先于进程白名单（绝对分流）；false=仅白名单进程参与分流
+  cn_direct: true          # 中国站强制直连
+  foreign_proxy: true      # 国外站强制走代理（零泄漏）
+  block_ipv6: true         # 屏蔽全部出站 IPv6（防 IPv6 泄漏，推荐开启）
+  rule_files:
+    geosite: "geosite.dat" # geosite.dat / 文本域名列表 / GeoLite2 CSV
+    geoip: "geoip.dat"     # geoip.dat / 文本 CIDR 列表
+  custom_direct: []        # 自定义强制直连：域名 / full: / keyword: / regexp: / CIDR
+  custom_proxy: []         # 自定义强制代理：同上
+  # ---- 「零中国痕迹」附加配置 ----
+  dns_relay_port: 5300     # 本地 DNS 中继端口（0=关闭 DNS 劫持，不推荐）
+  system_dns: ""           # 中国域名解析 DNS（留空=应用原始 DNS 服务器）
+  dot_server: "1.1.1.1:853"        # 国外域名 DoT 服务器（经上游代理出口）
+  dot_sni: "cloudflare-dns.com"    # DoT TLS SNI
+  block_foreign_udp: true  # 丢弃国外 UDP（QUIC/STUN/TURN 零泄漏）
+  auto_update_hours: 0     # 规则文件自动更新间隔（小时），0=关闭
+  update_urls:
+    geosite: "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat"
+    geoip: "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat"
+```
+
+> ⚠️ **向后兼容**：旧版 `config.json` 没有 `split` 块时，分流保持关闭，原有进程白名单行为完全不变。新生成的默认配置会开启 `both` 模式（绝对分流）。
+
+### 分流优先级（自高到低）
+
+1. **自定义规则** `custom_direct` / `custom_proxy`（先域名后 IP）
+2. **进程优先级**（`both` + `geo_priority=false` 时）：非白名单进程直连旁路
+3. **地理判定**：SNI 域名（geosite:cn）→ 未命中再目标 IP（geoip:cn）
+4. **fail-safe**：无法判定的一律按国外处理（走代理），**绝不直连泄漏**
+
+### 规则文件
+
+- **📦 开箱即用**：geosite:cn（6,417 条域名规则）与 geoip:cn（5,070 个 IPv4 网段）已通过 `//go:embed` **直接编译进 GoPass 二进制**，无需下载任何文件即可启用分流。
+- **磁盘覆盖（可选）**：磁盘上的 `geosite.dat` / `geoip.dat`（或自定义 `.txt/.list/.csv`）存在时优先加载磁盘文件；可用 `.tools\download.ps1` 或 Web UI `Settings → Split Routing → Update Rule Files` 一键在线更新到最新版。**删除磁盘文件即恢复内置版本。**
+- **重新生成内置规则**：运行 `.tools\download.ps1` 获取最新 `.dat` 后，执行 `go test -tags genrules -run TestGenEmbeddedRules ./internal/engine/`，重新编译即可把最新规则固化进二进制。
+
+### 🛡️ 「零中国痕迹」保障机制
+
+| 泄漏途径 | 防护措施 |
+|---|---|
+| 客户端真实 IP | 国外流量必须经上游代理出口；**代理连接失败直接断开，绝不直连回退** |
+| DNS 泄漏（系统/DoH/DoT） | DNS 中继劫持 UDP 53：中国域名走系统 DNS；**国外域名经上游代理走 DoT（1.1.1.1:853）解析**，全程不触碰中国境内解析器。应用的 DoH/DoT（TCP 853/443）按地理分流走代理 |
+| WebRTC / STUN / TURN | 国外目标 UDP 一律丢弃（含 STUN 3478、TURN 3478/5349、QUIC 443），WebRTC 无法通过 UDP 探测到本地 IP |
+| IPv6 泄漏 | `block_ipv6` 默认开启，出站 IPv6 全部静默丢弃 |
+| QUIC / HTTP3 | 国外 UDP 443 丢弃，浏览器强制回退 TCP 经代理；中国站 QUIC 不受影响 |
+| TLS ClientHello 指纹 | GoPass 是**透明 TCP 代理（无 MITM）**，ClientHello 由客户端应用原样透传，远端看到的即应用自身指纹；如需指纹伪装，请在上游代理（如 v2ray/xray + uTLS）层面实现 |
+
+### Web UI
+
+`Settings → Split Routing (绝对分流)`：一键开关、模式选择、优先级、IPv6/UDP 策略、DNS 中继、自定义直连/代理列表（一行一条）、规则文件在线更新，并实时显示 geosite:cn / geoip:cn 规则加载统计。
 
 ---
 

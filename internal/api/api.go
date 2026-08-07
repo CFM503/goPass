@@ -35,6 +35,8 @@ func StartServer(addr string, eng *engine.Engine) error {
 	mux.HandleFunc("/api/rules", s.handleRules)
 	mux.HandleFunc("/api/upstream", s.handleUpstream)
 	mux.HandleFunc("/api/performance", s.handlePerformance)
+	mux.HandleFunc("/api/split", s.handleSplit)
+	mux.HandleFunc("/api/split/update-rules", s.handleSplitUpdateRules)
 	mux.HandleFunc("/ws", ws.HandleWS)
 
 	log.Printf("Web UI and API server listening on http://%s\n", addr)
@@ -201,4 +203,42 @@ func (s *Server) handlePerformance(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	http.Error(w, "invalid request", http.StatusBadRequest)
+}
+
+// handleSplit 获取 / 更新「绝对分流」配置（热重载）。
+func (s *Server) handleSplit(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == http.MethodGet {
+		var data map[string]interface{} = map[string]interface{}{}
+		if s.engine != nil {
+			data = s.engine.GetSplit()
+		}
+		json.NewEncoder(w).Encode(data)
+		return
+	} else if r.Method == http.MethodPost {
+		var sc config.SplitConfig
+		if err := json.NewDecoder(r.Body).Decode(&sc); err == nil {
+			if s.engine != nil {
+				s.engine.UpdateSplit(sc, "config.json")
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
+			return
+		}
+	}
+	http.Error(w, "invalid request", http.StatusBadRequest)
+}
+
+// handleSplitUpdateRules 在线更新规则文件并热重载。
+func (s *Server) handleSplitUpdateRules(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	if s.engine == nil {
+		http.Error(w, "engine not ready", http.StatusInternalServerError)
+		return
+	}
+	res := s.engine.UpdateRuleFiles()
+	json.NewEncoder(w).Encode(res)
 }

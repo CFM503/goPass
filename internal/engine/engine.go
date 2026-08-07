@@ -19,6 +19,16 @@ type Engine struct {
 	tproxy      *TProxy
 	interceptor *Interceptor
 
+	// 绝对分流路由器（热重载）
+	router *Router
+
+	// DNS 中继（零 DNS 泄漏）
+	dnsMu    sync.Mutex
+	dnsRelay *DNSRelay
+
+	// 规则文件自动更新
+	autoStop chan struct{}
+
 	// 运行时统计（供 API 层读取）
 	Stats *Stats
 }
@@ -154,9 +164,13 @@ func New(cfg *config.Config) (*Engine, error) {
 	// 启动独立的僵尸连接垃圾回收器，彻底与前端请求解绑
 	go stats.startGC()
 
+	// 初始化绝对分流路由器（规则文件缺失时 fail-safe）
+	router, _ := NewRouter(cfg.Split.Resolve(), "")
+
 	return &Engine{
 		cfg:     cfg,
 		tracker: NewConnTracker(cfg.System.ConnTrackGCInterval, cfg.System.ConnTrackTTL),
+		router:  router,
 		Stats:   stats,
 	}, nil
 }
@@ -223,17 +237,29 @@ func (e *Engine) Start() error {
 	}
 
 	// 启动本地透明代理监听器
-	tproxy, err := NewTProxy(e.tracker, proxyType, proxyAddr, e.Stats, e.cfg.Performance, e.cfg.System.TProxyPort)
+	tproxy, err := NewTProxy(e.tracker, proxyType, proxyAddr, e.Stats, e.cfg.Performance, e.cfg.System.TProxyPort, e.router)
 	if err != nil {
 		return fmt.Errorf("TProxy 启动失败: %w", err)
 	}
 	e.tproxy = tproxy
 	go tproxy.Accept()
 
+	// 同步进程白名单到分流路由器（供 both 模式进程优先级判定）
+	if e.router != nil {
+		e.router.SetWhitelist(whitelist)
+	}
+
+	// 先启动 DNS 中继（零 DNS 泄漏），再启动拦截器，
+	// 确保拦截器启动时即具备正确的 DNS 中继端口
+	e.startDNSRelay()
+
 	// 启动 WinDivert 拦截器（纯 Go syscall，无 CGo）
-	interceptor := NewInterceptor(e.cfg.Routing.Mode, whitelist, e.tracker, proxyHost, uint16(proxyPort), uint16(e.cfg.System.TProxyPort), e.Stats)
+	interceptor := NewInterceptor(e.cfg.Routing.Mode, whitelist, e.tracker, proxyHost, uint16(proxyPort), uint16(e.cfg.System.TProxyPort), e.Stats, e.router)
 	e.interceptor = interceptor
 	go interceptor.Start()
+
+	// 启动规则文件自动更新
+	e.startAutoUpdate()
 
 	log.Println("[Engine] 所有组件启动完毕，开始透明代理...")
 	return nil
@@ -289,6 +315,15 @@ func (e *Engine) UpdateUpstream(pType, addr string, port int, saveFile string) {
 
 // Stop 停止引擎
 func (e *Engine) Stop() {
+	// 停止规则自动更新
+	e.stopAutoUpdate()
+	// 停止 DNS 中继
+	e.dnsMu.Lock()
+	if e.dnsRelay != nil {
+		e.dnsRelay.Close()
+		e.dnsRelay = nil
+	}
+	e.dnsMu.Unlock()
 	if e.interceptor != nil {
 		e.interceptor.Close()
 	}
@@ -332,6 +367,9 @@ func (e *Engine) UpdateRules(rules []config.Rule, configPath string) error {
 	if e.interceptor != nil {
 		e.interceptor.SetWhitelist(whitelist)
 	}
+	if e.router != nil {
+		e.router.SetWhitelist(whitelist)
+	}
 
 	if configPath != "" {
 		e.cfgMu.RLock()
@@ -351,6 +389,187 @@ func (e *Engine) UpdateUIConfig(wsInterval, connLimit int, showDirect bool, dire
 	e.cfg.API.DirectConnsLimit = directLimit
 }
 
+// =============================================================================
+// 绝对分流（Split）控制
+// =============================================================================
+
+// GetSplit 返回分流配置 + 规则加载状态（供 API/UI）。
+func (e *Engine) GetSplit() map[string]interface{} {
+	e.cfgMu.RLock()
+	resolved := e.cfg.Split.Resolve()
+	sc := e.cfg.Split
+	e.cfgMu.RUnlock()
+
+	var stats GeoMatcherStats
+	if e.router != nil {
+		stats = e.router.MatcherStats()
+	}
+
+	return map[string]interface{}{
+		"enabled":           resolved.Enabled,
+		"mode":              resolved.Mode,
+		"geo_priority":      resolved.GeoPriority,
+		"cn_direct":         resolved.CNDirect,
+		"foreign_proxy":     resolved.ForeignProxy,
+		"block_ipv6":        resolved.BlockIPv6,
+		"block_foreign_udp": resolved.BlockForeignUDP,
+		"dns_relay_port":    resolved.DNSRelayPort,
+		"system_dns":        resolved.SystemDNS,
+		"dot_server":        resolved.DoTServer,
+		"dot_sni":           resolved.DoTSNI,
+		"auto_update_hours": resolved.AutoUpdateHours,
+		"custom_direct":     resolved.CustomDirect,
+		"custom_proxy":      resolved.CustomProxy,
+		"rule_files": map[string]string{
+			"geosite": sc.RuleFiles.GeoSite,
+			"geoip":   sc.RuleFiles.GeoIP,
+		},
+		"update_urls": map[string]string{
+			"geosite": sc.UpdateURLs.GeoSite,
+			"geoip":   sc.UpdateURLs.GeoIP,
+		},
+		"status": stats,
+	}
+}
+
+// UpdateSplit 热更新分流配置：重新加载规则、重启 DNS 中继、更新拦截器。
+func (e *Engine) UpdateSplit(sc config.SplitConfig, configPath string) error {
+	sc = config.NormalizeSplit(sc)
+	e.cfgMu.Lock()
+	e.cfg.Split = sc
+	e.cfgMu.Unlock()
+
+	resolved := sc.Resolve()
+
+	// 1. 更新路由器（重新加载规则文件；失败保留旧规则）
+	if e.router != nil {
+		e.router.Update(resolved, "")
+	}
+
+	// 2. 重启 DNS 中继（同时同步拦截器 DNS 中继端口）
+	e.startDNSRelay()
+
+	// 3. 重启自动更新
+	e.startAutoUpdate()
+
+	// 5. 持久化
+	if configPath != "" {
+		e.cfgMu.RLock()
+		err := e.cfg.Save(configPath)
+		e.cfgMu.RUnlock()
+		if err != nil {
+			log.Printf("[Engine] ⚠️ 保存分流配置失败: %v", err)
+		}
+	}
+	log.Printf("[Engine] 🔀 分流配置已热更新: mode=%s enabled=%v geo_priority=%v cn_direct=%v foreign_proxy=%v",
+		resolved.Mode, resolved.Enabled, resolved.GeoPriority, resolved.CNDirect, resolved.ForeignProxy)
+	return nil
+}
+
+// UpdateRuleFiles 在线更新规则文件并热重载（供 API 调用）。
+func (e *Engine) UpdateRuleFiles() *RuleUpdateResult {
+	e.cfgMu.RLock()
+	geositeURL := e.cfg.Split.UpdateURLs.GeoSite
+	geoipURL := e.cfg.Split.UpdateURLs.GeoIP
+	geositePath := e.cfg.Split.RuleFiles.GeoSite
+	geoipPath := e.cfg.Split.RuleFiles.GeoIP
+	e.cfgMu.RUnlock()
+
+	res := UpdateRuleFiles(geositeURL, geositePath, geoipURL, geoipPath)
+
+	// 更新成功后立即热重载规则
+	if (res.GeoSiteOK || res.GeoIPOK) && e.router != nil {
+		e.cfgMu.RLock()
+		resolved := e.cfg.Split.Resolve()
+		e.cfgMu.RUnlock()
+		e.router.Update(resolved, "")
+	}
+	return res
+}
+
+// startDNSRelay 按当前配置启动/重启 DNS 中继。
+func (e *Engine) startDNSRelay() {
+	e.cfgMu.RLock()
+	resolved := e.cfg.Split.Resolve()
+	e.cfgMu.RUnlock()
+
+	e.dnsMu.Lock()
+	defer e.dnsMu.Unlock()
+
+	// 先停旧的
+	if e.dnsRelay != nil {
+		e.dnsRelay.Close()
+		e.dnsRelay = nil
+	}
+
+	// 同步 DNS 中继端口到拦截器（0=关闭 DNS 劫持）
+	var relayPort uint16
+	if resolved.Enabled && resolved.DNSRelayPort > 0 {
+		relayPort = uint16(resolved.DNSRelayPort)
+	}
+	if e.interceptor != nil {
+		e.interceptor.SetDNSRelayPort(relayPort)
+	}
+
+	if !resolved.Enabled || resolved.DNSRelayPort <= 0 {
+		return
+	}
+	if e.tproxy == nil || e.tproxy.upstream == nil {
+		log.Printf("[Engine] TProxy 未就绪，DNS 中继延后启动")
+		return
+	}
+	relay := NewDNSRelay(e.router, e.tracker, e.tproxy.upstream, resolved)
+	if err := relay.Start(resolved.DNSRelayPort); err != nil {
+		log.Printf("[Engine] ⚠️ DNS 中继启动失败（DNS 劫持将关闭）: %v", err)
+		return
+	}
+	e.dnsRelay = relay
+}
+
+// startAutoUpdate 启动规则文件自动更新协程（幂等：重复调用会先停旧的）。
+func (e *Engine) startAutoUpdate() {
+	e.cfgMu.RLock()
+	hours := e.cfg.Split.Resolve().AutoUpdateHours
+	e.cfgMu.RUnlock()
+
+	e.stopAutoUpdate()
+	if hours <= 0 {
+		return
+	}
+	e.autoStop = make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(time.Duration(hours) * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-e.autoStop:
+				return
+			case <-ticker.C:
+				log.Printf("[Engine] 🔄 开始自动更新规则文件...")
+				res := e.UpdateRuleFiles()
+				if res.Error != "" {
+					log.Printf("[Engine] ⚠️ 规则自动更新部分失败: %s", res.Error)
+				} else {
+					log.Printf("[Engine] ✅ 规则自动更新完成")
+				}
+			}
+		}
+	}()
+	log.Printf("[Engine] 🔄 规则文件自动更新已启用（每 %d 小时）", hours)
+}
+
+// stopAutoUpdate 停止规则自动更新协程。
+func (e *Engine) stopAutoUpdate() {
+	if e.autoStop != nil {
+		select {
+		case <-e.autoStop:
+		default:
+			close(e.autoStop)
+		}
+		e.autoStop = nil
+	}
+}
+
 // GetConfig 返回当前配置的安全快照副件，完全根除前端序列化的线程抢占问题
 func (e *Engine) GetConfig() *config.Config {
 	e.cfgMu.RLock()
@@ -364,6 +583,7 @@ func (e *Engine) GetConfig() *config.Config {
 		},
 		Outbounds:   config.OutboundConfig{},
 		Performance: e.cfg.Performance,
+		Split:       e.cfg.Split,
 	}
 
 	if len(e.cfg.Routing.Rules) > 0 {

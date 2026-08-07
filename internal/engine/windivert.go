@@ -477,7 +477,7 @@ func (h *winDivertHandle) Close() {
 // Interceptor：白名单拦截主逻辑
 // =============================================================================
 
-// Interceptor 拦截指定进程的流量，并重定向到本地 TProxy 端口
+// Interceptor 拦截受控进程/分流范围内的流量，并重定向到本地 TProxy / DNS 中继
 type Interceptor struct {
 	handle      *winDivertHandle
 	mu          sync.Mutex
@@ -489,37 +489,75 @@ type Interceptor struct {
 	proxyIP     string
 	proxyPort   uint16
 	tproxyPort  uint16
-	stopCh      chan struct{}
-	stats       *Stats
+	dnsRelayPort uint16
+	router       *Router
+	stopCh       chan struct{}
+	stats        *Stats
+	lastLog      time.Time // 日志限流
 }
 
 // NewInterceptor 创建拦截器
-func NewInterceptor(mode string, whitelist []string, tracker *ConnTracker, proxyIP string, proxyPort uint16, tproxyPort uint16, stats *Stats) *Interceptor {
+func NewInterceptor(mode string, whitelist []string, tracker *ConnTracker, proxyIP string, proxyPort uint16, tproxyPort uint16, stats *Stats, router *Router) *Interceptor {
+	var dnsPort uint16
+	if router != nil && router.SplitEnabled() && router.DNSRelayPort() > 0 {
+		dnsPort = uint16(router.DNSRelayPort())
+	}
 	return &Interceptor{
-		mode:       mode,
-		myPid:      uint32(os.Getpid()),
-		whitelist:  whitelist,
-		tracker:    tracker,
-		proxyIP:    proxyIP,
-		proxyPort:  proxyPort,
-		tproxyPort: tproxyPort,
-		stopCh:     make(chan struct{}),
-		stats:      stats,
+		mode:         mode,
+		myPid:        uint32(os.Getpid()),
+		whitelist:    whitelist,
+		tracker:      tracker,
+		proxyIP:      proxyIP,
+		proxyPort:    proxyPort,
+		tproxyPort:   tproxyPort,
+		dnsRelayPort: dnsPort,
+		router:       router,
+		stopCh:       make(chan struct{}),
+		stats:        stats,
+	}
+}
+
+// SetDNSRelayPort 热更新 DNS 中继端口（0=关闭 DNS 劫持）。
+func (i *Interceptor) SetDNSRelayPort(port uint16) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.dnsRelayPort != port {
+		i.dnsRelayPort = port
+		log.Printf("[WinDivert] DNS 中继端口已更新: %d", port)
 	}
 }
 
 // buildFilter 动态构建 WinDivert 过滤字符串
-// 仅拦截出站 TCP，排除 127.0.0.1 (具体进程在 handlePacket 中根据 PID 过滤)
+// 拦截：
+//  1. 出站 TCP (准备劫持)
+//  2. 出站 UDP 443 (QUIC 拦截，防双栈泄漏)
+//  3. 出站 UDP 53 (DNS 劫持，防 DNS 泄漏) —— 分流开启且 DNS 中继启用时
+//  4. DNS 中继回包 (反向 NAT)
+//  5. 出站 IPv6 (防 IPv6 泄漏，可配置)
+//  6. TProxy 返回的 TCP 包 (反向 NAT)
 func (i *Interceptor) buildFilter() string {
-	// 拦截：
-	// 1. 出站 TCP (准备劫持)
-	// 2. 出站 UDP 443 (防止 QUIC 导致客户端双 IP / Cloudflare 验证失败)
-	// 3. 出站 IPv6 (防泄露)
-	// 4. TProxy 返回的 TCP 包 (反向 NAT)
-	filter := fmt.Sprintf("(outbound and ip and tcp and ip.DstAddr != 127.0.0.1) or "+
-		"(outbound and ip and udp and udp.DstPort == 443) or "+
-		"(outbound and ipv6) or "+
-		"(outbound and ip and tcp and tcp.SrcPort == %d)", i.tproxyPort)
+	blockIPv6 := true
+	dnsPort := uint16(0)
+	if i.router != nil {
+		blockIPv6 = i.router.BlockIPv6()
+		if i.router.SplitEnabled() && i.router.DNSRelayPort() > 0 {
+			dnsPort = uint16(i.router.DNSRelayPort())
+		}
+	}
+
+	parts := []string{
+		"(outbound and ip and tcp and ip.DstAddr != 127.0.0.1)",
+		fmt.Sprintf("(outbound and ip and tcp and tcp.SrcPort == %d)", i.tproxyPort),
+		"(outbound and ip and udp and udp.DstPort == 443)",
+	}
+	if blockIPv6 {
+		parts = append(parts, "(outbound and ipv6)")
+	}
+	if dnsPort != 0 {
+		parts = append(parts, "(outbound and ip and udp and udp.DstPort == 53)")
+		parts = append(parts, fmt.Sprintf("(outbound and ip and udp and udp.SrcPort == %d)", dnsPort))
+	}
+	filter := strings.Join(parts, " or ")
 
 	if i.proxyIP != "" && i.proxyIP != "127.0.0.1" {
 		filter += fmt.Sprintf(" and ip.DstAddr != %s", i.proxyIP)
@@ -532,7 +570,8 @@ func (i *Interceptor) buildFilter() string {
 func (i *Interceptor) Start() {
 	log.Printf("[WinDivert] 正在启动... PID=%d（已排除自身，防止回环）", i.myPid)
 
-	handle, err := wdOpen("false", layerNetwork, priorityDefault, 0)
+	// 直接以真实过滤规则打开，避免启动窗口期（filter 为 false）流量裸奔泄漏
+	handle, err := wdOpen(i.buildFilter(), layerNetwork, priorityDefault, 0)
 	if err != nil {
 		log.Printf("[WinDivert] ❌ 启动失败: %v", err)
 		return
@@ -540,7 +579,7 @@ func (i *Interceptor) Start() {
 	i.mu.Lock()
 	i.handle = handle
 	i.mu.Unlock()
-	log.Println("[WinDivert] ✅ 驱动就绪，开始扫描白名单进程...")
+	log.Println("[WinDivert] ✅ 驱动就绪，开始扫描拦截...")
 
 	go i.filterUpdater()
 
@@ -642,7 +681,7 @@ func (i *Interceptor) filterUpdater() {
 	}
 }
 
-// handlePacket 修改包头目标地址 → 本地 TProxy，记录原始目标，重新注入
+// handlePacket 修改包头目标地址 → 本地 TProxy / DNS 中继，记录原始目标，重新注入
 func (i *Interceptor) handlePacket(pkt []byte, addr *winDivertAddress) {
 	if len(pkt) < 20 {
 		return
@@ -652,184 +691,320 @@ func (i *Interceptor) handlePacket(pkt []byte, addr *winDivertAddress) {
 		return
 	}
 
+	// IPv6：按 block_ipv6 配置屏蔽（零 IPv6 泄漏）或放行
+	if (pkt[0] >> 4) == 6 {
+		if i.shouldBlockIPv6() {
+			return // 静默丢弃，暴力阻止本地环境泄露双栈请求
+		}
+		i.sendPass(pkt, addr)
+		return
+	}
+
 	origDstIP := make(net.IP, 4)
 	copy(origDstIP, pkt[16:20])
 	origSrcIP := make(net.IP, 4)
 	copy(origSrcIP, pkt[12:16])
-	tcpOffset := ipHeaderLen
-	srcPort := binary.BigEndian.Uint16(pkt[tcpOffset : tcpOffset+2])
-	origDstPort := binary.BigEndian.Uint16(pkt[tcpOffset+2 : tcpOffset+4])
+	srcPort := binary.BigEndian.Uint16(pkt[ipHeaderLen : ipHeaderLen+2])
+	origDstPort := binary.BigEndian.Uint16(pkt[ipHeaderLen+2 : ipHeaderLen+4])
 	origDstIPStr := origDstIP.String()
 	srcIP := net.IP(pkt[12:16]).String()
+	isUDP := pkt[9] == 17
 
-	// 拦截到 IPv6 包（因为 filter 加了 outbound and ipv6）
-	// 直接静默丢弃不发回，暴力阻止本地环境泄露双栈请求
-	isIPv6 := (pkt[0] >> 4) == 6
-	if isIPv6 {
+	// 反向 NAT：TProxy / DNS 中继 发回应用的数据包
+	if srcPort == i.tproxyPort || (isUDP && i.dnsRelayPort != 0 && srcPort == i.dnsRelayPort) {
+		i.reverseNAT(pkt, addr, ipHeaderLen)
 		return
 	}
 
-	// 先判断是否为 TProxy 发回的数据包（反向 NAT）
-	if srcPort == i.tproxyPort {
-		target, found := i.tracker.Get(origDstIP.String(), origDstPort)
-		if !found {
-			// 如果没找到跟踪记录，原样发回
-			i.mu.Lock()
-			h := i.handle
-			i.mu.Unlock()
-			if h != nil {
-				h.Send(pkt, addr)
-			}
-			return
-		}
-
-		// 反向 NAT：TProxy (127.0.0.1:7893) -> App (127.0.0.1:AppPort)
-		// 修改为：OrigDst (真实外网) -> OrigSrc (App内网IP:AppPort)
-		copy(pkt[12:16], target.OrigDstIP.To4())
-		binary.BigEndian.PutUint16(pkt[tcpOffset:tcpOffset+2], target.OrigDstPort)
-		copy(pkt[16:20], target.OrigSrcIP.To4())
-
-		if target.OrigSrcIP.IsLoopback() {
-			addr.Bits |= uint32(flagOutbound) // Loopback packets are always outbound
-			addr.Bits |= uint32(flagLoopback)
-		} else {
-			addr.Bits &= ^uint32(flagOutbound) // 改为入站接收 (Inbound)
-			addr.Bits &= ^uint32(flagLoopback)
-		}
-		addr.IfIdx = target.OrigIfIdx
-		addr.SubIfIdx = target.OrigSubIfIdx
-
-		i.mu.Lock()
-		h := i.handle
-		i.mu.Unlock()
-		if h == nil {
-			return
-		}
-
-		if err := h.CalcChecksums(pkt, addr); err != nil {
-			log.Printf("[WinDivert] 反向 NAT 计算校验和失败: %v", err)
-			return
-		}
-		if err := h.Send(pkt, addr); err != nil {
-			log.Printf("[WinDivert] 反向 NAT Send 失败: %v", err)
-		}
-		return
-	}
-
-	// 1. 获取该端口所属 PID
+	// 自身流量直接放行
 	pid, _ := process.GetPidByPort(srcPort)
-
 	if pid == 0 || pid == i.myPid {
-		// 无法识别或自身流量，直接发回（不修改）
-		i.mu.Lock()
-		h := i.handle
-		i.mu.Unlock()
-		if h != nil {
-			h.Send(pkt, addr)
-		}
+		i.sendPass(pkt, addr)
 		return
 	}
 
-	// 2. 检查策略
-	isAllowed := false
-	matchedName := ""
+	i.mu.Lock()
+	mode := i.mode
+	upstreamPid := i.upstreamPid
+	proxyIP := i.proxyIP
+	i.mu.Unlock()
 
+	// 上游代理自身流量放行（防回环）
+	if upstreamPid != 0 && pid == upstreamPid {
+		i.sendPass(pkt, addr)
+		return
+	}
+	if proxyIP != "" && origDstIPStr == proxyIP {
+		i.sendPass(pkt, addr)
+		return
+	}
+
+	// 私有/本地目标一律不劫持（LAN 流量直连，绝不上代理）
+	if isPrivateOrLocal(origDstIP) {
+		i.sendPass(pkt, addr)
+		return
+	}
+
+	pName := process.GetNameByPID(pid)
+	router := i.router
+	splitOn := router != nil && router.SplitEnabled()
+
+	if isUDP {
+		i.handleUDP(pkt, addr, pid, pName, origSrcIP, origDstIP, origDstPort, srcPort, ipHeaderLen, splitOn, router)
+		return
+	}
+
+	// ---- TCP：决定是否劫持到 TProxy ----
+	hijack := false
+	matchedName := ""
+	if splitOn {
+		if router.InterceptScope(pName) {
+			hijack = true
+			matchedName = pName
+		}
+	} else {
+		// 原有进程白名单逻辑
+		if mode == "global" {
+			hijack = true
+			matchedName = pName
+		} else {
+			i.mu.Lock()
+			whitelist := make([]string, len(i.whitelist))
+			copy(whitelist, i.whitelist)
+			i.mu.Unlock()
+			for _, name := range whitelist {
+				if strings.EqualFold(name, pName) {
+					hijack = true
+					matchedName = name
+					break
+				}
+			}
+		}
+	}
+
+	if !hijack {
+		// 未纳入分流管控，上报直连统计并原样放行
+		if i.stats != nil {
+			targetAddr := fmt.Sprintf("%s:%d", origDstIPStr, origDstPort)
+			id := fmt.Sprintf("%s:%d", srcIP, srcPort)
+			if matchedName == "" {
+				matchedName = pName
+			}
+			i.stats.ReportDirect(id, matchedName, targetAddr, origDstIPStr)
+		}
+		i.sendPass(pkt, addr)
+		return
+	}
+
+	// 分流开启时劫持量很大，限流记录；原有白名单模式保持每次劫持都记录
+	if splitOn {
+		i.logLimited("[WinDivert] 劫持 %s (PID %d): %s:%d -> %s:%d", pName, pid, srcIP, srcPort, origDstIPStr, origDstPort)
+	} else {
+		log.Printf("[WinDivert] 劫持进程 %s (PID %d): %s:%d -> %s:%d", matchedName, pid, srcIP, srcPort, origDstIPStr, origDstPort)
+	}
+	i.hijackTCP(pkt, addr, origSrcIP, origDstIP, origDstPort, srcPort, ipHeaderLen, matchedName)
+}
+
+// handleUDP 处理出站 UDP：
+//   - 分流开启：DNS(53) 劫持到中继；国外 UDP 一律丢弃（QUIC/STUN/TURN 零泄漏）；中国 UDP 放行
+//   - 原有逻辑：白名单进程的 UDP 443 (QUIC) 丢弃，强制回退 TCP
+func (i *Interceptor) handleUDP(pkt []byte, addr *winDivertAddress, pid uint32, pName string, origSrcIP, origDstIP net.IP, origDstPort, srcPort uint16, ipHeaderLen int, splitOn bool, router *Router) {
+	if splitOn {
+		inScope := router.InterceptScope(pName)
+
+		// DNS 劫持到本地中继（零系统 DNS 泄漏）
+		if inScope && origDstPort == 53 && router.DNSRelayPort() > 0 {
+			i.hijackToDNSRelay(pkt, addr, origSrcIP, origDstIP, origDstPort, srcPort, ipHeaderLen, pName)
+			return
+		}
+		if !inScope {
+			i.sendPass(pkt, addr)
+			return
+		}
+		// 国外 UDP（QUIC/HTTP3、STUN/TURN、游戏等）一律丢弃 —— 零中国痕迹
+		if router.BlockForeignUDP() && router.IsForeignIP(origDstIP) {
+			i.logLimited("[WinDivert] 丢弃国外 UDP (%s pid=%d) -> %s:%d", pName, pid, origDstIP.String(), origDstPort)
+			return
+		}
+		i.sendPass(pkt, addr)
+		return
+	}
+
+	// 原有逻辑：白名单/全局进程的 UDP 443 (QUIC) 丢弃，强制浏览器回退 TCP HTTP/2
 	i.mu.Lock()
 	mode := i.mode
 	whitelist := make([]string, len(i.whitelist))
 	copy(whitelist, i.whitelist)
-	upstreamPid := i.upstreamPid
 	i.mu.Unlock()
 
+	allowed := false
 	if mode == "global" {
-		// 全局模式下，如果抓到的包是上游代理自己发出的，直接放行，避免死循环
-		if upstreamPid != 0 && pid == upstreamPid {
-			isAllowed = false
-		} else {
-			isAllowed = true
-			matchedName = process.GetNameByPID(pid)
-		}
+		allowed = true
 	} else {
-		// 性能优化核心点：先获取包所属的进程名（已完全缓存）
-		pName := process.GetNameByPID(pid)
-		pNameLower := strings.ToLower(pName)
-
-		// 然后对比白名单，大幅减少循环和重复的系统快照调用
 		for _, name := range whitelist {
-			if strings.ToLower(name) == pNameLower {
-				isAllowed = true
-				matchedName = name
+			if strings.EqualFold(name, pName) {
+				allowed = true
 				break
 			}
 		}
 	}
-
-	if !isAllowed {
-		// 未在白名单，或者被旁路，上报直连统计
-		if i.stats != nil {
-			targetAddr := fmt.Sprintf("%s:%d", origDstIPStr, origDstPort)
-			id := fmt.Sprintf("%s:%d", srcIP, srcPort)
-			// 如果没有名字，获取一下
-			if matchedName == "" {
-				matchedName = process.GetNameByPID(pid)
-			}
-			i.stats.ReportDirect(id, matchedName, targetAddr, origDstIPStr)
-		}
-
-		// 直接原样发回
-		i.mu.Lock()
-		h := i.handle
-		i.mu.Unlock()
-		if h != nil {
-			h.Send(pkt, addr)
-		}
+	if allowed && origDstPort == 443 {
+		i.logLimited("[WinDivert] 丢弃受控进程 QUIC UDP (%s pid=%d) -> %s:%d", pName, pid, origDstIP.String(), origDstPort)
 		return
 	}
+	i.sendPass(pkt, addr)
+}
 
-	// 如果是受控/代理进程发出的 UDP 443 (QUIC) 报文，直接静默丢弃！
-	// 强制浏览器瞬间退回 TCP HTTP/2，防止 QUIC 泄露导致的 Cloudflare IP 拆分与验证失败
-	isUDP := (pkt[9] == 17)
-	if isUDP {
-		return
-	}
-
-	log.Printf("[WinDivert] 劫持进程 %s (PID %d): %s:%d -> %s:%d", matchedName, pid, srcIP, srcPort, origDstIPStr, origDstPort)
-
-	// 记录原始目标（连接跟踪）
-	// 注意：我们将包的源 IP 也改为 127.0.0.1 以确保本地监听器能正确接收，
-	// 并在 tracker 中完整记录真实的 OrigSrcIP 和 OrigDstIP
+// hijackTCP 记录连接跟踪并改写 TCP 报文 → 本地 TProxy
+func (i *Interceptor) hijackTCP(pkt []byte, addr *winDivertAddress, origSrcIP, origDstIP net.IP, origDstPort, srcPort uint16, ipHeaderLen int, processName string) {
 	origIfIdx := addr.IfIdx
 	origSubIfIdx := addr.SubIfIdx
-	i.tracker.Set("127.0.0.1", srcPort, origSrcIP, srcPort, origDstIP, origDstPort, origIfIdx, origSubIfIdx, matchedName)
+	i.tracker.Set("127.0.0.1", srcPort, origSrcIP, srcPort, origDstIP, origDstPort, origIfIdx, origSubIfIdx, processName)
 
-	// 修改源 IP 为 127.0.0.1 (重要：为了让本地 Socket 接受，建议源和目的一致)
+	// 修改源 IP 为 127.0.0.1（本地 Socket 才能接收）
 	copy(pkt[12:16], net.IPv4(127, 0, 0, 1).To4())
 	// 修改目标 IP 为 127.0.0.1
 	copy(pkt[16:20], net.IPv4(127, 0, 0, 1).To4())
 	// 修改目标端口为本地 TProxy
-	binary.BigEndian.PutUint16(pkt[tcpOffset+2:tcpOffset+4], i.tproxyPort)
+	binary.BigEndian.PutUint16(pkt[ipHeaderLen+2:ipHeaderLen+4], i.tproxyPort)
 
-	// 修正标志位 (WinDivert 2.x 位域操作)
-	// 如果是注入到本地 127.0.0.1，必须设置 Outbound 和 Loopback
-	addr.Bits |= uint32(flagOutbound) // 必须是 Outbound
-	addr.Bits |= uint32(flagLoopback) // 必须是 Loopback
+	// 注入到本地 127.0.0.1，必须设置 Outbound 和 Loopback
+	addr.Bits |= uint32(flagOutbound)
+	addr.Bits |= uint32(flagLoopback)
 
+	if err := i.calcAndSend(pkt, addr); err != nil {
+		log.Printf("[WinDivert] 劫持 TCP 注入失败: %v", err)
+	}
+}
+
+// hijackToDNSRelay 记录连接跟踪并改写 UDP 53 报文 → 本地 DNS 中继
+func (i *Interceptor) hijackToDNSRelay(pkt []byte, addr *winDivertAddress, origSrcIP, origDstIP net.IP, origDstPort, srcPort uint16, ipHeaderLen int, processName string) {
+	origIfIdx := addr.IfIdx
+	origSubIfIdx := addr.SubIfIdx
+	i.tracker.Set("127.0.0.1", srcPort, origSrcIP, srcPort, origDstIP, origDstPort, origIfIdx, origSubIfIdx, processName)
+
+	copy(pkt[12:16], net.IPv4(127, 0, 0, 1).To4())
+	copy(pkt[16:20], net.IPv4(127, 0, 0, 1).To4())
+	binary.BigEndian.PutUint16(pkt[ipHeaderLen+2:ipHeaderLen+4], i.dnsRelayPort)
+
+	addr.Bits |= uint32(flagOutbound)
+	addr.Bits |= uint32(flagLoopback)
+
+	if err := i.calcAndSend(pkt, addr); err != nil {
+		log.Printf("[WinDivert] DNS 劫持注入失败: %v", err)
+	}
+}
+
+// reverseNAT 反向 NAT：TProxy/DNS中继 (127.0.0.1:port) -> App (127.0.0.1:AppPort)
+// 改写为：OrigDst (真实外网/DNS) -> OrigSrc (App 真实 IP:AppPort)
+func (i *Interceptor) reverseNAT(pkt []byte, addr *winDivertAddress, ipHeaderLen int) {
+	dstIP := net.IP(pkt[16:20])
+	dstPort := binary.BigEndian.Uint16(pkt[ipHeaderLen+2 : ipHeaderLen+4])
+	target, found := i.tracker.Get(dstIP.String(), dstPort)
+	if !found {
+		// 没有跟踪记录，原样发回
+		i.sendPass(pkt, addr)
+		return
+	}
+
+	copy(pkt[12:16], target.OrigDstIP.To4())
+	binary.BigEndian.PutUint16(pkt[ipHeaderLen:ipHeaderLen+2], target.OrigDstPort)
+	copy(pkt[16:20], target.OrigSrcIP.To4())
+	binary.BigEndian.PutUint16(pkt[ipHeaderLen+2:ipHeaderLen+4], target.OrigSrcPort)
+
+	if target.OrigSrcIP.IsLoopback() {
+		addr.Bits |= uint32(flagOutbound)
+		addr.Bits |= uint32(flagLoopback)
+	} else {
+		addr.Bits &= ^uint32(flagOutbound) // 改为入站接收 (Inbound)
+		addr.Bits &= ^uint32(flagLoopback)
+	}
+	addr.IfIdx = target.OrigIfIdx
+	addr.SubIfIdx = target.OrigSubIfIdx
+
+	if err := i.calcAndSend(pkt, addr); err != nil {
+		log.Printf("[WinDivert] 反向 NAT 注入失败: %v", err)
+	}
+}
+
+// calcAndSend 重新计算校验和并注入数据包。
+func (i *Interceptor) calcAndSend(pkt []byte, addr *winDivertAddress) error {
 	i.mu.Lock()
 	h := i.handle
 	i.mu.Unlock()
 	if h == nil {
-		return
+		return fmt.Errorf("WinDivert 句柄未就绪")
 	}
-
-	// 重新计算校验和
 	if err := h.CalcChecksums(pkt, addr); err != nil {
-		log.Printf("[WinDivert] CalcChecksums 失败: %v", err)
+		return fmt.Errorf("CalcChecksums 失败: %w", err)
+	}
+	if err := h.Send(pkt, addr); err != nil {
+		return fmt.Errorf("Send 失败: %w", err)
+	}
+	return nil
+}
+
+// sendPass 原样放行数据包。
+func (i *Interceptor) sendPass(pkt []byte, addr *winDivertAddress) {
+	i.mu.Lock()
+	h := i.handle
+	i.mu.Unlock()
+	if h != nil {
+		h.Send(pkt, addr)
+	}
+}
+
+// shouldBlockIPv6 是否屏蔽全部出站 IPv6。
+func (i *Interceptor) shouldBlockIPv6() bool {
+	if i.router != nil && i.router.SplitEnabled() {
+		return i.router.BlockIPv6()
+	}
+	// 未开启分流时保持原有行为：一律丢弃 IPv6
+	return true
+}
+
+// logLimited 日志限流（最多每 10 秒一条），避免刷屏。
+func (i *Interceptor) logLimited(format string, args ...interface{}) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	now := time.Now()
+	if now.Sub(i.lastLog) < 10*time.Second {
 		return
 	}
-	// 重新注入
-	if err := h.Send(pkt, addr); err != nil {
-		log.Printf("[WinDivert] Send 失败: %v", err)
+	i.lastLog = now
+	log.Printf(format, args...)
+}
+
+// isPrivateOrLocal 判断目标 IP 是否为私网/本地/组播地址（这类流量绝不上代理）。
+func isPrivateOrLocal(ip net.IP) bool {
+	v4 := ip.To4()
+	if v4 == nil {
+		return true
 	}
+	b := v4
+	switch {
+	case b[0] == 0: // 0.0.0.0/8
+		return true
+	case b[0] == 10: // 10/8
+		return true
+	case b[0] == 127: // 回环
+		return true
+	case b[0] == 169 && b[1] == 254: // 链路本地 169.254/16
+		return true
+	case b[0] == 172 && b[1] >= 16 && b[1] <= 31: // 172.16/12
+		return true
+	case b[0] == 192 && b[1] == 168: // 192.168/16
+		return true
+	case b[0] == 100 && b[1] >= 64 && b[1] <= 127: // CGNAT 100.64/10
+		return true
+	case b[0] == 198 && b[1] == 18: // 198.18/15 (fake-IP / benchmark)
+		return true
+	case b[0] == 192 && b[1] == 0 && b[2] == 0: // 192.0.0/24
+		return true
+	case b[0] >= 224: // 组播 + 保留
+		return true
+	}
+	return false
 }
 
 // SetMode 动态更新代理模式

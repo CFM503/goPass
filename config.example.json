@@ -1,0 +1,66 @@
+{
+  "api": {
+    "listen_addr": "127.0.0.1:8080",
+    "ws_refresh_interval": 5,
+    "ui_conn_limit": 10,
+    "show_direct_conns": false,
+    "direct_conns_limit": 20
+  },
+  "dns": {
+    "listen_addr": "127.0.0.1:53",
+    "fake_ip_range": "198.18.0.0/16"
+  },
+  "routing": {
+    "mode": "whitelist",
+    "rules": [
+      { "type": "process", "payload": "chrome.exe", "outbound": "proxy" }
+    ]
+  },
+  "outbounds": {
+    "servers": [
+      { "tag": "proxy", "type": "socks5", "address": "127.0.0.1", "port": 1080 },
+      { "tag": "direct", "type": "direct" }
+    ]
+  },
+  "performance": {
+    "buffer_size": 32768,
+    "tcp_nodelay": true,
+    "tcp_socket_buffer": 0,
+    "bidirectional_wait": true,
+    "tcp_keep_alive": true,
+    "keep_alive_period": 15,
+    "tcp_linger": -1
+  },
+  "system": {
+    "tproxy_port": 7893,
+    "process_cache_refresh_interval": 10,
+    "netstat_cache_refresh_interval": 2,
+    "direct_conns_ttl": 5,
+    "conn_track_gc_interval": 30,
+    "conn_track_ttl": 60
+  },
+  "split": {
+    "enabled": true,
+    "mode": "both",
+    "geo_priority": true,
+    "cn_direct": true,
+    "foreign_proxy": true,
+    "block_ipv6": true,
+    "rule_files": {
+      "geosite": "geosite.dat",
+      "geoip": "geoip.dat"
+    },
+    "custom_direct": [],
+    "custom_proxy": [],
+    "dns_relay_port": 5300,
+    "system_dns": "",
+    "dot_server": "1.1.1.1:853",
+    "dot_sni": "cloudflare-dns.com",
+    "block_foreign_udp": true,
+    "auto_update_hours": 0,
+    "update_urls": {
+      "geosite": "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat",
+      "geoip": "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat"
+    }
+  }
+}

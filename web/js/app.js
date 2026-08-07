@@ -241,6 +241,7 @@ function switchView(viewId) {
         navSettings.classList.add('active');
         viewSettings.style.display = 'block';
         loadSettings();
+        loadSplitSettings();
     }
 }
 
@@ -407,4 +408,118 @@ document.getElementById('save-settings-btn').addEventListener('click', () => {
         btn.innerText = "Save Global Settings";
         alert("Network error while saving.");
     });
+});
+
+// ============================================================================
+// Split Routing (绝对分流)
+// ============================================================================
+
+function splitStatusText(d) {
+    const s = d.status || {};
+    const lines = [];
+    const modeNames = { geo: 'geo（纯地理）', process: 'process（纯进程白名单）', both: 'both（地理+进程）' };
+    lines.push(`Mode: ${modeNames[d.mode] || d.mode} | Geo Priority: ${d.geo_priority ? 'ON' : 'OFF'} | CN Direct: ${d.cn_direct ? 'ON' : 'OFF'} | Foreign Proxy: ${d.foreign_proxy ? 'ON' : 'OFF'}`);
+    lines.push(`IPv6: ${d.block_ipv6 ? 'BLOCKED' : 'allowed'} | Foreign UDP: ${d.block_foreign_udp ? 'BLOCKED' : 'allowed'} | DNS Relay: 127.0.0.1:${d.dns_relay_port}`);
+    if (s.geosite_file || s.geoip_file) {
+        lines.push(`Rules: geosite:cn ${s.geosite_cn_entries || 0} entries (${s.geosite_file || '-'}) | geoip:cn ${s.geoip_cn_cidrs || 0} CIDRs (${s.geoip_file || '-'})`);
+    }
+    lines.push(`Custom: direct ${s.custom_direct_domains || 0}D/${s.custom_direct_ips || 0}IP | proxy ${s.custom_proxy_domains || 0}D/${s.custom_proxy_ips || 0}IP | loaded: ${s.loaded_at || '-'}`);
+    if (s.error) lines.push(`⚠️ ${s.error}`);
+    return lines.join('\n');
+}
+
+function loadSplitSettings() {
+    fetch('/api/split')
+        .then(res => res.json())
+        .then(d => {
+            document.getElementById('split-status').innerText = splitStatusText(d);
+            document.getElementById('split-enabled').checked = !!d.enabled;
+            document.getElementById('split-mode').value = d.mode || 'both';
+            document.getElementById('split-geo-priority').checked = d.geo_priority !== undefined ? d.geo_priority : true;
+            document.getElementById('split-cn-direct').checked = d.cn_direct !== undefined ? d.cn_direct : true;
+            document.getElementById('split-foreign-proxy').checked = d.foreign_proxy !== undefined ? d.foreign_proxy : true;
+            document.getElementById('split-block-ipv6').checked = d.block_ipv6 !== undefined ? d.block_ipv6 : true;
+            document.getElementById('split-block-foreign-udp').checked = d.block_foreign_udp !== undefined ? d.block_foreign_udp : true;
+            document.getElementById('split-dns-relay-port').value = d.dns_relay_port || 5300;
+            document.getElementById('split-system-dns').value = d.system_dns || '';
+            document.getElementById('split-dot-server').value = d.dot_server || '1.1.1.1:853';
+            document.getElementById('split-dot-sni').value = d.dot_sni || 'cloudflare-dns.com';
+            document.getElementById('split-custom-direct').value = (d.custom_direct || []).join('\n');
+            document.getElementById('split-custom-proxy').value = (d.custom_proxy || []).join('\n');
+            document.getElementById('split-geosite-file').value = (d.rule_files && d.rule_files.geosite) || 'geosite.dat';
+            document.getElementById('split-geoip-file').value = (d.rule_files && d.rule_files.geoip) || 'geoip.dat';
+            document.getElementById('split-auto-update-hours').value = d.auto_update_hours || 0;
+        })
+        .catch(console.error);
+}
+
+document.getElementById('save-split-btn').addEventListener('click', () => {
+    const split = {
+        enabled: document.getElementById('split-enabled').checked,
+        mode: document.getElementById('split-mode').value,
+        geo_priority: document.getElementById('split-geo-priority').checked,
+        cn_direct: document.getElementById('split-cn-direct').checked,
+        foreign_proxy: document.getElementById('split-foreign-proxy').checked,
+        block_ipv6: document.getElementById('split-block-ipv6').checked,
+        block_foreign_udp: document.getElementById('split-block-foreign-udp').checked,
+        dns_relay_port: parseInt(document.getElementById('split-dns-relay-port').value, 10) || 0,
+        system_dns: document.getElementById('split-system-dns').value.trim(),
+        dot_server: document.getElementById('split-dot-server').value.trim(),
+        dot_sni: document.getElementById('split-dot-sni').value.trim(),
+        custom_direct: document.getElementById('split-custom-direct').value.split('\n').map(s => s.trim()).filter(Boolean),
+        custom_proxy: document.getElementById('split-custom-proxy').value.split('\n').map(s => s.trim()).filter(Boolean),
+        auto_update_hours: parseInt(document.getElementById('split-auto-update-hours').value, 10) || 0,
+        rule_files: {
+            geosite: document.getElementById('split-geosite-file').value.trim(),
+            geoip: document.getElementById('split-geoip-file').value.trim()
+        }
+    };
+
+    fetch('/api/split', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(split)
+    })
+        .then(res => res.json())
+        .then(data => {
+            if (data.status === 'ok') {
+                const msg = document.getElementById('split-save-msg');
+                msg.style.display = 'inline-block';
+                setTimeout(() => { msg.style.display = 'none'; }, 3000);
+                loadSplitSettings();
+            } else {
+                alert('Error saving split settings.');
+            }
+        })
+        .catch(err => {
+            console.error(err);
+            alert("Network error while saving split settings.");
+        });
+});
+
+document.getElementById('update-rules-btn').addEventListener('click', () => {
+    const btn = document.getElementById('update-rules-btn');
+    const msg = document.getElementById('split-update-msg');
+    btn.disabled = true;
+    btn.innerText = "⏳ Updating...";
+    msg.style.display = 'inline-block';
+    msg.innerText = 'Downloading rule files...';
+
+    fetch('/api/split/update-rules', { method: 'POST' })
+        .then(res => res.json())
+        .then(data => {
+            btn.disabled = false;
+            btn.innerText = "🔄 Update Rule Files";
+            if (data.geosite_ok || data.geoip_ok) {
+                msg.innerText = `✅ geosite ${data.geosite_ok ? 'OK' : 'SKIP'} | geoip ${data.geoip_ok ? 'OK' : 'SKIP'}`;
+            } else {
+                msg.innerText = `❌ ${data.error || 'Update failed'}`;
+            }
+            loadSplitSettings();
+        })
+        .catch(err => {
+            btn.disabled = false;
+            btn.innerText = "🔄 Update Rule Files";
+            msg.innerText = `❌ ${err.message}`;
+        });
 });

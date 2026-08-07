@@ -6,12 +6,12 @@ import (
 	"io"
 	"log"
 	"net"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/CFM503/goPass/internal/config"
-	"golang.org/x/net/proxy"
 )
 
 // bufferPool holds 1MB buffers; handleConn slices them to the configured size.
@@ -71,13 +71,11 @@ type TProxy struct {
 	listener net.Listener
 	tracker  *ConnTracker
 
-	proxyType string
-	proxyAddr string
-	proxyMu   sync.RWMutex
+	// 上游代理拨号器（热切换）
+	upstream *UpstreamDialer
 
-	// Upstream dialer cache
-	cachedDialer proxy.Dialer
-	cachedKey    string
+	// 分流路由器（绝对分流）；为 nil 时保持原有「全部走代理」行为
+	router *Router
 
 	// [v1.2.1] Hot-reloadable performance settings
 	bufferSize      int
@@ -93,7 +91,7 @@ type TProxy struct {
 }
 
 // NewTProxy 创建本地代理监听器
-func NewTProxy(tracker *ConnTracker, proxyType, proxyAddr string, stats *Stats, perf config.PerformanceConfig, tproxyPort int) (*TProxy, error) {
+func NewTProxy(tracker *ConnTracker, proxyType, proxyAddr string, stats *Stats, perf config.PerformanceConfig, tproxyPort int, router *Router) (*TProxy, error) {
 	// [v1.2.6 Config] 移除魔数 7893，使用系统配置的 TProxyPort
 	ln, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", tproxyPort))
 	if err != nil {
@@ -103,8 +101,8 @@ func NewTProxy(tracker *ConnTracker, proxyType, proxyAddr string, stats *Stats, 
 	return &TProxy{
 		listener:        ln,
 		tracker:         tracker,
-		proxyType:       proxyType,
-		proxyAddr:       proxyAddr,
+		upstream:        NewUpstreamDialer(proxyType, proxyAddr),
+		router:          router,
 		bufferSize:      perf.BufferSize,
 		tcpNoDelay:      perf.TCPNoDelay,
 		tcpSocketBuffer: perf.TCPSocketBuffer,
@@ -133,43 +131,8 @@ func (tp *TProxy) UpdatePerformance(perf config.PerformanceConfig) {
 
 // UpdateUpstream 热更上游代理配置
 func (tp *TProxy) UpdateUpstream(pType, pAddr string) {
-	tp.proxyMu.Lock()
-	defer tp.proxyMu.Unlock()
-	tp.proxyType = pType
-	tp.proxyAddr = pAddr
-	tp.cachedDialer = nil
-	tp.cachedKey = ""
+	tp.upstream.Update(pType, pAddr)
 	log.Printf("[TProxy] 上游代理已热切换为: %s -> %s", pType, pAddr)
-}
-
-func (tp *TProxy) getDialer(pType, pAddr string) (proxy.Dialer, error) {
-	tp.proxyMu.RLock()
-	key := pType + "://" + pAddr
-	if tp.cachedDialer != nil && tp.cachedKey == key {
-		d := tp.cachedDialer
-		tp.proxyMu.RUnlock()
-		return d, nil
-	}
-	tp.proxyMu.RUnlock()
-
-	tp.proxyMu.Lock()
-	defer tp.proxyMu.Unlock()
-	if tp.cachedDialer != nil && tp.cachedKey == key {
-		return tp.cachedDialer, nil
-	}
-
-	var d proxy.Dialer
-	var err error
-	if pType == "http" {
-		d, err = NewHTTPProxy(pAddr, "", "", proxy.Direct)
-	} else {
-		d, err = proxy.SOCKS5("tcp", pAddr, nil, proxy.Direct)
-	}
-	if err == nil {
-		tp.cachedDialer = d
-		tp.cachedKey = key
-	}
-	return d, err
 }
 
 // Accept 开始接受连接（阻塞）
@@ -240,30 +203,57 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 	// SNI Sniffing (Zero-Data-Loss)
 	var peekBuf []byte
 	isHTTPS := target.OrigDstPort == 443
+	domain := ""
 
 	if isHTTPS {
 		var sni string
 		var err error
 		peekBuf, sni, err = readTLSClientHello(conn)
 		if err == nil && sni != "" {
+			domain = sni
 			targetAddr = fmt.Sprintf("%s:%d", sni, target.OrigDstPort)
 		}
 	}
 
-	tp.proxyMu.RLock()
-	pType := tp.proxyType
-	pAddr := tp.proxyAddr
-	tp.proxyMu.RUnlock()
+	// =========================================================================
+	// 绝对分流：在 SNI 嗅探之后、真正转发之前做出 直连/代理 决策
+	// =========================================================================
+	policy := "PROXY"
+	reason := "whitelist"
+	var remote net.Conn
+	var err error
 
-	dialer, errDialer := tp.getDialer(pType, pAddr)
-	if errDialer != nil {
-		log.Printf("[TProxy] 代理 Dialer 创建失败: %v", errDialer)
-		return
+	if tp.router != nil && tp.router.SplitEnabled() {
+		res := tp.router.Decide(domain, target.OrigDstIP, target.ProcessName)
+		reason = res.Reason
+		if res.Decision == DecisionDirect {
+			// 直连：直接拨原始目标 IP（不做本地 DNS 解析，避免任何 DNS 泄漏）
+			directAddr := net.JoinHostPort(target.OrigDstIP.String(), strconv.Itoa(int(target.OrigDstPort)))
+			remote, err = net.DialTimeout("tcp", directAddr, 10*time.Second)
+			policy = "DIRECT"
+			targetAddr = directAddr
+		} else {
+			// 代理：SNI 域名交给上游代理做远端 DNS 解析（零本地 DNS 泄漏）
+			if domain != "" {
+				targetAddr = fmt.Sprintf("%s:%d", domain, target.OrigDstPort)
+			} else {
+				targetAddr = fmt.Sprintf("%s:%d", target.OrigDstIP.String(), target.OrigDstPort)
+			}
+			remote, err = tp.upstream.Dial("tcp", targetAddr)
+		}
+	} else {
+		// 原有逻辑：一律走上游代理
+		dialer, errDialer := tp.upstream.Dialer()
+		if errDialer != nil {
+			log.Printf("[TProxy] 代理 Dialer 创建失败: %v", errDialer)
+			return
+		}
+		remote, err = dialer.Dial("tcp", targetAddr)
 	}
 
-	remote, err := dialer.Dial("tcp", targetAddr)
+	// 关键：任何失败都直接关闭连接，绝不回退直连（零中国痕迹的核心保障）
 	if err != nil {
-		log.Printf("[TProxy] 上游连接失败 %s: %v", targetAddr, err)
+		log.Printf("[TProxy] 连接失败 %s (policy=%s reason=%s): %v", targetAddr, policy, reason, err)
 		return
 	}
 	defer remote.Close()
@@ -304,7 +294,8 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 			"process": target.ProcessName,
 			"target":  targetAddr,
 			"host":    target.OrigDstIP.String(),
-			"policy":  "PROXY",
+			"policy":  policy,
+			"reason":  reason,
 		}
 		tp.stats.AddActiveConn(connInfo)
 	}

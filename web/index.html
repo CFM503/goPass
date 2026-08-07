@@ -11,7 +11,7 @@
 
 <body>
     <div class="sidebar">
-        <div class="logo">GoPass <span style="font-size:12px;opacity:0.6;font-weight:normal">v1.4.9</span></div>
+        <div class="logo">GoPass <span style="font-size:12px;opacity:0.6;font-weight:normal">v1.5.0</span></div>
         <nav>
             <a href="#" class="active" id="nav-dashboard">Dashboard</a>
             <a href="#" id="nav-rules">Rules</a>
@@ -190,6 +190,134 @@
                         Global Settings</button>
                     <span id="settings-save-msg" style="color: #238636; line-height: 38px; display: none;">✅ Settings
                         Saved &amp; Applied</span>
+                </div>
+
+                <hr style="border:none; border-top:1px solid rgba(255,255,255,0.1); margin: 30px 0;">
+
+                <h3>🔀 Split Routing (绝对分流)</h3>
+                <p style="color:#a1a1aa; margin-bottom: 20px">
+                    中国站强制直连 / 国外站强制走代理，基于 SNI 域名 + 目标 IP 的地理判定，杜绝真实 IP、DNS、IPv6、QUIC、WebRTC 泄漏（零中国痕迹）。
+                </p>
+
+                <div id="split-status"
+                    style="padding: 12px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; color: #a1a1aa; font-size: 12px; margin-bottom: 20px; white-space: pre-line;">
+                    Loading split status...
+                </div>
+
+                <div style="display:flex; gap: 10px; align-items: center; margin-bottom: 15px;">
+                    <label style="color:var(--text-secondary); width:150px;">Enable Split</label>
+                    <input type="checkbox" id="split-enabled" style="transform: scale(1.2);">
+                    <span style="color:var(--text-secondary);">开启「绝对分流」（重启后按配置自动加载）</span>
+                </div>
+
+                <div style="display:flex; gap: 10px; align-items: center; margin-bottom: 15px;">
+                    <label style="color:var(--text-secondary); width:150px;">Mode</label>
+                    <select id="split-mode"
+                        style="padding:10px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color:white; border-radius:4px;">
+                        <option value="both">both — 地理 + 进程（推荐）</option>
+                        <option value="geo">geo — 纯地理分流</option>
+                        <option value="process">process — 纯进程白名单</option>
+                    </select>
+                </div>
+
+                <div style="display:flex; gap: 10px; align-items: center; margin-bottom: 15px;">
+                    <label style="color:var(--text-secondary); width:150px;">Geo Priority</label>
+                    <input type="checkbox" id="split-geo-priority" style="transform: scale(1.2);">
+                    <span style="color:var(--text-secondary);">地理分流优先于进程白名单（绝对分流）；关闭后仅白名单进程参与分流</span>
+                </div>
+
+                <div style="display:flex; gap: 10px; align-items: center; margin-bottom: 15px;">
+                    <label style="color:var(--text-secondary); width:150px;">CN Direct</label>
+                    <input type="checkbox" id="split-cn-direct" style="transform: scale(1.2);">
+                    <span style="color:var(--text-secondary);">中国站强制直连</span>
+                </div>
+
+                <div style="display:flex; gap: 10px; align-items: center; margin-bottom: 15px;">
+                    <label style="color:var(--text-secondary); width:150px;">Foreign Proxy</label>
+                    <input type="checkbox" id="split-foreign-proxy" style="transform: scale(1.2);">
+                    <span style="color:var(--text-secondary);">国外站强制走代理（零泄漏）</span>
+                </div>
+
+                <div style="display:flex; gap: 10px; align-items: center; margin-bottom: 15px;">
+                    <label style="color:var(--text-secondary); width:150px;">Block IPv6</label>
+                    <input type="checkbox" id="split-block-ipv6" style="transform: scale(1.2);">
+                    <span style="color:var(--text-secondary);">屏蔽全部出站 IPv6（防 IPv6 泄漏，推荐开启）</span>
+                </div>
+
+                <div style="display:flex; gap: 10px; align-items: center; margin-bottom: 15px;">
+                    <label style="color:var(--text-secondary); width:150px;">Block Foreign UDP</label>
+                    <input type="checkbox" id="split-block-foreign-udp" style="transform: scale(1.2);">
+                    <span style="color:var(--text-secondary);">丢弃国外 UDP（QUIC/STUN/TURN 零泄漏）</span>
+                </div>
+
+                <div style="display:flex; gap: 10px; align-items: center; margin-bottom: 15px;">
+                    <label style="color:var(--text-secondary); width:150px;">DNS Relay Port</label>
+                    <input type="number" id="split-dns-relay-port" min="0" max="65535"
+                        style="padding:10px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color:white; border-radius:4px; width:100px;">
+                    <span style="color:var(--text-secondary);">本地 DNS 中继端口，0=关闭 DNS 劫持（不推荐）</span>
+                </div>
+
+                <div style="display:flex; gap: 10px; align-items: center; margin-bottom: 15px;">
+                    <label style="color:var(--text-secondary); width:150px;">System DNS</label>
+                    <input type="text" id="split-system-dns" placeholder="留空 = 应用原始 DNS"
+                        style="padding:10px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color:white; border-radius:4px; flex:1;">
+                    <span style="color:var(--text-secondary);">中国域名解析用</span>
+                </div>
+
+                <div style="display:flex; gap: 10px; align-items: center; margin-bottom: 15px;">
+                    <label style="color:var(--text-secondary); width:150px;">DoT Server</label>
+                    <input type="text" id="split-dot-server" placeholder="1.1.1.1:853"
+                        style="padding:10px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color:white; border-radius:4px; flex:1;">
+                    <span style="color:var(--text-secondary);">国外域名经代理走 DoT 解析</span>
+                </div>
+
+                <div style="display:flex; gap: 10px; align-items: center; margin-bottom: 15px;">
+                    <label style="color:var(--text-secondary); width:150px;">DoT SNI</label>
+                    <input type="text" id="split-dot-sni" placeholder="cloudflare-dns.com"
+                        style="padding:10px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color:white; border-radius:4px; flex:1;">
+                </div>
+
+                <div style="margin-bottom: 15px;">
+                    <label style="color:var(--text-secondary); display:block; margin-bottom:5px;">Custom Direct（自定义强制直连，一行一条；支持域名 / full: / keyword: / regexp: / CIDR）</label>
+                    <textarea id="split-custom-direct" rows="3" spellcheck="false"
+                        style="width:100%; padding:10px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color:white; border-radius:4px; box-sizing:border-box; font-family:Consolas,monospace;"></textarea>
+                </div>
+
+                <div style="margin-bottom: 15px;">
+                    <label style="color:var(--text-secondary); display:block; margin-bottom:5px;">Custom Proxy（自定义强制代理，一行一条；支持域名 / full: / keyword: / regexp: / CIDR）</label>
+                    <textarea id="split-custom-proxy" rows="3" spellcheck="false"
+                        style="width:100%; padding:10px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color:white; border-radius:4px; box-sizing:border-box; font-family:Consolas,monospace;"></textarea>
+                </div>
+
+                <div style="display:flex; gap: 10px; align-items: center; margin-bottom: 15px;">
+                    <label style="color:var(--text-secondary); width:150px;">geosite 文件</label>
+                    <input type="text" id="split-geosite-file" placeholder="geosite.dat"
+                        style="padding:10px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color:white; border-radius:4px; flex:1;">
+                </div>
+
+                <div style="display:flex; gap: 10px; align-items: center; margin-bottom: 15px;">
+                    <label style="color:var(--text-secondary); width:150px;">geoip 文件</label>
+                    <input type="text" id="split-geoip-file" placeholder="geoip.dat"
+                        style="padding:10px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color:white; border-radius:4px; flex:1;">
+                </div>
+
+                <div style="display:flex; gap: 10px; align-items: center; margin-bottom: 20px;">
+                    <label style="color:var(--text-secondary); width:150px;">Auto Update (h)</label>
+                    <input type="number" id="split-auto-update-hours" min="0" max="720" step="1" placeholder="0"
+                        style="padding:10px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color:white; border-radius:4px; width:100px;">
+                    <span style="color:var(--text-secondary);">规则文件自动更新间隔（小时），0=关闭</span>
+                </div>
+
+                <div style="margin-top: 24px; display: flex; gap: 15px; align-items: center;">
+                    <button id="save-split-btn"
+                        style="padding: 10px 20px; background:#238636; border:none; color:white; border-radius:4px; cursor:pointer;">💾
+                        Save Split Settings</button>
+                    <button id="update-rules-btn"
+                        style="padding: 10px 20px; background:#7c3aed; border:none; color:white; border-radius:4px; cursor:pointer;">🔄
+                        Update Rule Files</button>
+                    <span id="split-save-msg" style="color: #238636; line-height: 38px; display: none;">✅ Saved &amp;
+                        Applied</span>
+                    <span id="split-update-msg" style="color: #a1a1aa; line-height: 38px; display: none;"></span>
                 </div>
 
                 <hr style="border:none; border-top:1px solid rgba(255,255,255,0.1); margin: 30px 0;">
