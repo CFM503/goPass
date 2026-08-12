@@ -115,6 +115,9 @@ func (ws *WSServer) broadcastLoop() {
 
 		ws.mu.Lock()
 		for conn := range ws.clients {
+			// 写超时保护：某个挂死的客户端不应拖住整个广播循环，
+			// 否则所有 UI 面板都会一起卡住
+			conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 			if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
 				conn.Close()
 				delete(ws.clients, conn)

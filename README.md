@@ -32,8 +32,8 @@ A high-performance, Zero-Copy transparent proxy for Windows, tailored for extrem
 ## 📥 Installation & Usage / 安装与使用
 
 1. **Download / 下载**  
-   Compile from source using `go build` or download the ultra-slim release executable `gopass_1.5.1.exe`.  
-   根据源码自行编译，或直接下载极限瘦身的成品执行文件 `gopass_1.5.1.exe`。
+   Compile from source using `go build` or download the ultra-slim release executable `gopass_1.5.2.exe`.  
+   根据源码自行编译，或直接下载极限瘦身的成品执行文件 `gopass_1.5.2.exe`。
 
 2. **Run as Administrator / 提权运行**  
    ⚠️ GoPass **MUST** be run as Administrator because the `WinDivert` driver requires high-level system permissions.  
@@ -50,6 +50,13 @@ A high-performance, Zero-Copy transparent proxy for Windows, tailored for extrem
 5. **Whitelist Processes / 进程白名单**  
    By default, GoPass operates in `Whitelist` mode. Go to the `Dashboard` and click **Add to Rules** for applications you wish to route through the proxy.  
    默认处于 `Whitelist（白名单）` 劫持模式。在仪表盘看见目标软件后，轻轻一点 **Add to Rules**，流量即刻起飞。
+
+---
+
+## 📝 Release Notes / 更新日志 (v1.5.2)
+
+- **⚡ Web UI 加载提速**：移除头部 Google Fonts 渲染阻塞外链（国内直连被墙会卡 12s+，走代理也要 ~1s），字体改用系统栈（Segoe UI / Microsoft YaHei），UI 现在 100% 本地加载、毫秒级打开。
+- **🛡️ WebSocket 广播写超时**：为广播写入增加 5s deadline，防止单个挂死的 UI 标签页阻塞整个广播循环导致所有面板停更。
 
 ---
 
