@@ -11,7 +11,7 @@
 
 <body>
     <div class="sidebar">
-        <div class="logo">GoPass <span style="font-size:12px;opacity:0.6;font-weight:normal">v1.5.0</span></div>
+        <div class="logo">GoPass <span style="font-size:12px;opacity:0.6;font-weight:normal">v1.5.1</span></div>
         <nav>
             <a href="#" class="active" id="nav-dashboard">Dashboard</a>
             <a href="#" id="nav-rules">Rules</a>
@@ -320,6 +320,15 @@
                     <span id="split-update-msg" style="color: #a1a1aa; line-height: 38px; display: none;"></span>
                 </div>
 
+                <!-- 规则文件下载进度条 -->
+                <div id="split-update-progress" style="display: none; margin-top: 16px;">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="split-update-fill" style="width: 0%;"></div>
+                    </div>
+                    <div id="split-update-progress-text"
+                        style="color: var(--text-secondary); font-size: 12px; margin-top: 4px;">准备下载...</div>
+                </div>
+
                 <hr style="border:none; border-top:1px solid rgba(255,255,255,0.1); margin: 30px 0;">
 
                 <h3>⚡ Performance Tuning</h3>
@@ -389,6 +398,17 @@
                         Save Performance Settings</button>
                     <span id="perf-save-msg" style="color: #238636; line-height: 38px; display: none;">✅ Applied
                         immediately!</span>
+                </div>
+
+                <hr style="border:none; border-top:1px solid rgba(255,50,50,0.3); margin: 30px 0;">
+
+                <h3>⚠️ Danger Zone</h3>
+                <p style="color:#a1a1aa; margin-bottom: 20px;">复位全部配置为出厂默认值并保存到 config.json（热生效）。</p>
+                <div style="display:flex; gap: 15px; align-items: center;">
+                    <button id="reset-config-btn"
+                        style="padding: 10px 20px; background: rgba(255,50,50,0.2); border: 1px solid rgba(255,50,50,0.5); color:white; border-radius:4px; cursor:pointer;">♻️
+                        Reset Config</button>
+                    <span id="reset-config-msg" style="color: #a1a1aa; line-height: 38px; display: none;"></span>
                 </div>
             </div>
         </div>

@@ -29,6 +29,9 @@ type Engine struct {
 	// 规则文件自动更新
 	autoStop chan struct{}
 
+	// 规则文件在线更新进度（供前端轮询）
+	updateTracker *UpdateTracker
+
 	// 运行时统计（供 API 层读取）
 	Stats *Stats
 }
@@ -168,10 +171,11 @@ func New(cfg *config.Config) (*Engine, error) {
 	router, _ := NewRouter(cfg.Split.Resolve(), "")
 
 	return &Engine{
-		cfg:     cfg,
-		tracker: NewConnTracker(cfg.System.ConnTrackGCInterval, cfg.System.ConnTrackTTL),
-		router:  router,
-		Stats:   stats,
+		cfg:           cfg,
+		tracker:       NewConnTracker(cfg.System.ConnTrackGCInterval, cfg.System.ConnTrackTTL),
+		router:        router,
+		updateTracker: NewUpdateTracker(),
+		Stats:         stats,
 	}, nil
 }
 
@@ -466,7 +470,7 @@ func (e *Engine) UpdateSplit(sc config.SplitConfig, configPath string) error {
 	return nil
 }
 
-// UpdateRuleFiles 在线更新规则文件并热重载（供 API 调用）。
+// UpdateRuleFiles 在线更新规则文件并热重载（供 API 调用，带并发保护与进度跟踪）。
 func (e *Engine) UpdateRuleFiles() *RuleUpdateResult {
 	e.cfgMu.RLock()
 	geositeURL := e.cfg.Split.UpdateURLs.GeoSite
@@ -475,7 +479,10 @@ func (e *Engine) UpdateRuleFiles() *RuleUpdateResult {
 	geoipPath := e.cfg.Split.RuleFiles.GeoIP
 	e.cfgMu.RUnlock()
 
-	res := UpdateRuleFiles(geositeURL, geositePath, geoipURL, geoipPath)
+	if !e.updateTracker.Begin() {
+		return &RuleUpdateResult{UpdatedAt: nowStr(), Error: "规则更新正在进行中，请稍候"}
+	}
+	res := UpdateRuleFiles(geositeURL, geositePath, geoipURL, geoipPath, e.updateTracker)
 
 	// 更新成功后立即热重载规则
 	if (res.GeoSiteOK || res.GeoIPOK) && e.router != nil {
@@ -485,6 +492,65 @@ func (e *Engine) UpdateRuleFiles() *RuleUpdateResult {
 		e.router.Update(resolved, "")
 	}
 	return res
+}
+
+// GetUpdateProgress 返回规则文件下载进度快照（供 API GET 轮询）。
+func (e *Engine) GetUpdateProgress() UpdateTracker {
+	if e.updateTracker == nil {
+		return UpdateTracker{Status: "idle"}
+	}
+	return e.updateTracker.Snapshot()
+}
+
+// ResetConfig 将全部配置复位为出厂默认值，并热应用到运行中的组件。
+func (e *Engine) ResetConfig(configPath string) error {
+	def := config.DefaultConfig()
+	e.cfgMu.Lock()
+	e.cfg = def
+	e.cfgMu.Unlock()
+
+	// 热应用：性能参数 + 上游代理
+	if e.tproxy != nil {
+		e.tproxy.UpdatePerformance(def.Performance)
+		for _, srv := range def.Outbounds.Servers {
+			if srv.Type == "socks5" || srv.Type == "http" {
+				e.tproxy.UpdateUpstream(srv.Type, fmt.Sprintf("%s:%d", srv.Address, srv.Port))
+				break
+			}
+		}
+	}
+
+	// 热应用：模式 + 进程白名单
+	var whitelist []string
+	for _, rule := range def.Routing.Rules {
+		if rule.Type == "process" {
+			whitelist = append(whitelist, rule.Payload)
+		}
+	}
+	if e.interceptor != nil {
+		e.interceptor.SetMode(def.Routing.Mode)
+		e.interceptor.SetWhitelist(whitelist)
+	}
+	if e.router != nil {
+		e.router.SetWhitelist(whitelist)
+		e.router.Update(def.Split.Resolve(), "")
+	}
+
+	// 热应用：DNS 中继 + 规则自动更新
+	e.startDNSRelay()
+	e.startAutoUpdate()
+
+	if configPath != "" {
+		e.cfgMu.RLock()
+		err := e.cfg.Save(configPath)
+		e.cfgMu.RUnlock()
+		if err != nil {
+			log.Printf("[Engine] ⚠️ 保存复位配置失败: %v", err)
+			return err
+		}
+	}
+	log.Printf("[Engine] ♻️ 配置已复位为出厂默认值")
+	return nil
 }
 
 // startDNSRelay 按当前配置启动/重启 DNS 中继。

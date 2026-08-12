@@ -497,29 +497,128 @@ document.getElementById('save-split-btn').addEventListener('click', () => {
         });
 });
 
+function fmtBytes(b) {
+    b = Number(b) || 0;
+    if (b < 1024) return b + ' B';
+    const units = ['KB', 'MB', 'GB'];
+    let i = -1;
+    do { b /= 1024; i++; } while (b >= 1024 && i < units.length - 1);
+    return b.toFixed(1) + ' ' + units[i];
+}
+
+let splitUpdating = false;
+
 document.getElementById('update-rules-btn').addEventListener('click', () => {
+    if (splitUpdating) return;
+    splitUpdating = true;
+
     const btn = document.getElementById('update-rules-btn');
     const msg = document.getElementById('split-update-msg');
+    const bar = document.getElementById('split-update-progress');
+    const fill = document.getElementById('split-update-fill');
+    const ptext = document.getElementById('split-update-progress-text');
+
     btn.disabled = true;
     btn.innerText = "⏳ Updating...";
-    msg.style.display = 'inline-block';
-    msg.innerText = 'Downloading rule files...';
+    msg.style.display = 'none';
+    bar.style.display = 'block';
+    fill.style.width = '0%';
+    ptext.innerText = '准备下载...';
 
+    let stopped = false;
+    let pollTimer = null;
+    const stop = () => { if (!stopped) { stopped = true; if (pollTimer) clearTimeout(pollTimer); } };
+
+    const finish = (d) => {
+        stop();
+        bar.style.display = 'none';
+        btn.disabled = false;
+        btn.innerText = "🔄 Update Rule Files";
+        msg.style.display = 'inline-block';
+        if (d && (d.geosite_ok || d.geoip_ok)) {
+            msg.innerText = `✅ geosite ${d.geosite_ok ? 'OK' : 'SKIP'} | geoip ${d.geoip_ok ? 'OK' : 'SKIP'}`;
+        } else {
+            msg.innerText = `❌ ${(d && d.error) || 'Update failed'}`;
+        }
+        splitUpdating = false;
+        loadSplitSettings();
+    };
+
+    // 轮询下载进度（GET）
+    const poll = () => {
+        fetch('/api/split/update-rules')
+            .then(r => r.json())
+            .then(d => {
+                if (stopped) return;
+                if (d.status === 'running') {
+                    let done = 0, total = 0;
+                    ['geosite', 'geoip'].forEach(k => {
+                        if (d[k] && d[k].total > 0) { done += d[k].done; total += d[k].total; }
+                    });
+                    if (total > 0) {
+                        fill.style.width = Math.min(100, Math.round(done / total * 100)) + '%';
+                        ptext.innerText = `geosite ${fmtBytes(d.geosite && d.geosite.done)}/${fmtBytes(d.geosite && d.geosite.total)} · geoip ${fmtBytes(d.geoip && d.geoip.done)}/${fmtBytes(d.geoip && d.geoip.total)}`;
+                    } else {
+                        fill.style.width = '70%';
+                        ptext.innerText = `下载中... geosite ${fmtBytes(d.geosite && d.geosite.done)} · geoip ${fmtBytes(d.geoip && d.geoip.done)}`;
+                    }
+                    pollTimer = setTimeout(poll, 300);
+                } else {
+                    // idle / done / error：等待 POST 返回最终结果
+                    pollTimer = setTimeout(poll, 300);
+                }
+            })
+            .catch(() => { if (!stopped) pollTimer = setTimeout(poll, 500); });
+    };
+    poll();
+
+    // 启动更新（POST），完成后收尾
     fetch('/api/split/update-rules', { method: 'POST' })
         .then(res => res.json())
-        .then(data => {
+        .then(d => { if (!stopped) finish(d); })
+        .catch(err => { if (!stopped) finish(null); console.error(err); });
+});
+
+// ============================================================================
+// 配置复位（Danger Zone）
+// ============================================================================
+
+document.getElementById('reset-config-btn').addEventListener('click', () => {
+    if (!confirm(
+        '确定要复位全部配置为出厂默认值吗？\n\n' +
+        '将重置并热生效：\n' +
+        '· 上游代理（恢复为 SOCKS5 127.0.0.1:9192）\n' +
+        '· 代理模式与进程白名单\n' +
+        '· 绝对分流（split）设置\n' +
+        '· 性能参数 / DNS 中继 / 规则自动更新\n\n' +
+        '同时保存到 config.json。此操作不可撤销！'
+    )) return;
+
+    const btn = document.getElementById('reset-config-btn');
+    const msg = document.getElementById('reset-config-msg');
+    btn.disabled = true;
+    btn.innerText = "♻️ Resetting...";
+    msg.style.display = 'inline-block';
+    msg.innerText = '正在复位...';
+
+    fetch('/api/config/reset', { method: 'POST' })
+        .then(res => res.json())
+        .then(d => {
             btn.disabled = false;
-            btn.innerText = "🔄 Update Rule Files";
-            if (data.geosite_ok || data.geoip_ok) {
-                msg.innerText = `✅ geosite ${data.geosite_ok ? 'OK' : 'SKIP'} | geoip ${data.geoip_ok ? 'OK' : 'SKIP'}`;
+            btn.innerText = "♻️ Reset Config";
+            if (d.status === 'ok') {
+                msg.innerText = '✅ 已复位为出厂默认配置';
+                // 刷新各面板
+                loadSettings();
+                loadSplitSettings();
+                loadPerformSettings();
             } else {
-                msg.innerText = `❌ ${data.error || 'Update failed'}`;
+                msg.innerText = '❌ ' + (d.error || '复位失败');
             }
-            loadSplitSettings();
         })
         .catch(err => {
             btn.disabled = false;
-            btn.innerText = "🔄 Update Rule Files";
-            msg.innerText = `❌ ${err.message}`;
+            btn.innerText = "♻️ Reset Config";
+            msg.innerText = '❌ ' + err.message;
         });
 });

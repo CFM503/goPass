@@ -32,8 +32,8 @@ A high-performance, Zero-Copy transparent proxy for Windows, tailored for extrem
 ## 📥 Installation & Usage / 安装与使用
 
 1. **Download / 下载**  
-   Compile from source using `go build` or download the ultra-slim release executable `gopass_1.5.0.exe`.  
-   根据源码自行编译，或直接下载极限瘦身的成品执行文件 `gopass_1.5.0.exe`。
+   Compile from source using `go build` or download the ultra-slim release executable `gopass_1.5.1.exe`.  
+   根据源码自行编译，或直接下载极限瘦身的成品执行文件 `gopass_1.5.1.exe`。
 
 2. **Run as Administrator / 提权运行**  
    ⚠️ GoPass **MUST** be run as Administrator because the `WinDivert` driver requires high-level system permissions.  
@@ -50,6 +50,14 @@ A high-performance, Zero-Copy transparent proxy for Windows, tailored for extrem
 5. **Whitelist Processes / 进程白名单**  
    By default, GoPass operates in `Whitelist` mode. Go to the `Dashboard` and click **Add to Rules** for applications you wish to route through the proxy.  
    默认处于 `Whitelist（白名单）` 劫持模式。在仪表盘看见目标软件后，轻轻一点 **Add to Rules**，流量即刻起飞。
+
+---
+
+## 📝 Release Notes / 更新日志 (v1.5.1)
+
+- **♻️ 配置一键复位**：Settings 新增「Danger Zone」复位按钮（`POST /api/config/reset`），将全部配置（上游代理 / 模式 / 白名单 / split 分流 / 性能 / DNS 中继）复位为出厂默认值并**热生效**，同时写回 `config.json`。
+- **🔄 规则文件下载进度条**：`Update Rule Files` 按钮新增实时进度条（按文件显示 `done/total`，来自 Content-Length），`GET /api/split/update-rules` 轮询进度快照；带并发保护（更新中重复触发返回提示）。
+- **🧪 新增单元测试**：`TestUpdateTracker`（下载进度状态机）、`TestResetConfigSavesDefaults`（复位配置落盘）。
 
 ---
 

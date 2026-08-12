@@ -37,6 +37,7 @@ func StartServer(addr string, eng *engine.Engine) error {
 	mux.HandleFunc("/api/performance", s.handlePerformance)
 	mux.HandleFunc("/api/split", s.handleSplit)
 	mux.HandleFunc("/api/split/update-rules", s.handleSplitUpdateRules)
+	mux.HandleFunc("/api/config/reset", s.handleConfigReset)
 	mux.HandleFunc("/ws", ws.HandleWS)
 
 	log.Printf("Web UI and API server listening on http://%s\n", addr)
@@ -229,7 +230,28 @@ func (s *Server) handleSplit(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSplitUpdateRules 在线更新规则文件并热重载。
+// GET  -> 返回下载进度快照（供前端轮询进度条）
+// POST -> 启动规则文件更新
 func (s *Server) handleSplitUpdateRules(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.engine == nil {
+		http.Error(w, "engine not ready", http.StatusInternalServerError)
+		return
+	}
+	if r.Method == http.MethodGet {
+		json.NewEncoder(w).Encode(s.engine.GetUpdateProgress())
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	res := s.engine.UpdateRuleFiles()
+	json.NewEncoder(w).Encode(res)
+}
+
+// handleConfigReset 将全部配置复位为出厂默认值并热应用。
+func (s *Server) handleConfigReset(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if r.Method != http.MethodPost {
 		http.Error(w, "invalid request", http.StatusBadRequest)
@@ -239,6 +261,9 @@ func (s *Server) handleSplitUpdateRules(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "engine not ready", http.StatusInternalServerError)
 		return
 	}
-	res := s.engine.UpdateRuleFiles()
-	json.NewEncoder(w).Encode(res)
+	if err := s.engine.ResetConfig("config.json"); err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"status": "error", "error": err.Error()})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
 }
