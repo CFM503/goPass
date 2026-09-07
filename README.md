@@ -32,8 +32,8 @@ A high-performance, Zero-Copy transparent proxy for Windows, tailored for extrem
 ## 📥 Installation & Usage / 安装与使用
 
 1. **Download / 下载**  
-   Compile from source using `go build` or download the ultra-slim release executable `gopass_1.6.0.exe`.  
-   根据源码自行编译，或直接下载极限瘦身的成品执行文件 `gopass_1.6.0.exe`。
+   Compile from source using `go build` or download the ultra-slim release executable `gopass_1.6.1.exe`.  
+   根据源码自行编译，或直接下载极限瘦身的成品执行文件 `gopass_1.6.1.exe`。
 
 2. **Run as Administrator / 提权运行**  
    ⚠️ GoPass **MUST** be run as Administrator because the `WinDivert` driver requires high-level system permissions.  
@@ -50,6 +50,13 @@ A high-performance, Zero-Copy transparent proxy for Windows, tailored for extrem
 5. **Whitelist Processes / 进程白名单**  
    By default, GoPass operates in `Whitelist` mode. Go to the `Dashboard` and click **Add to Rules** for applications you wish to route through the proxy.  
    默认处于 `Whitelist（白名单）` 劫持模式。在仪表盘看见目标软件后，轻轻一点 **Add to Rules**，流量即刻起飞。
+
+## 📝 Release Notes / 更新日志 (v1.6.1)
+
+- **🎯 动态线路控制中心深度加固与指标增强**：
+  - **SingleSpeed 与 FinalScore 透出**：API 返回结构与外部指标上报补充单次测速 (`SingleSpeed`) 与最终综合评分 (`FinalScore`)，让看板和外部监控对调度决策依据一目了然。
+  - **初始平滑切线守卫优化**：完善 `AutoEnabled` 首次启动或初始上游为空时的防抖逻辑，允许首选就绪节点瞬间无缝挂载，无需等待冷启动保护期，进一步提升初次调度体验。
+  - **状态机与探针微调**：优化高频探测与健康恢复评估边界条件，确保高丢包及网络抖动环境下节点降级与回切行为更稳健。
 
 ---
 
