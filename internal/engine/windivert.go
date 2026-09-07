@@ -527,6 +527,18 @@ func (i *Interceptor) SetDNSRelayPort(port uint16) {
 	}
 }
 
+// SetProxyAddr 热更上游代理地址与端口（更新排除过滤与 PID 检索）。
+func (i *Interceptor) SetProxyAddr(ip string, port uint16) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.proxyIP != ip || i.proxyPort != port {
+		i.proxyIP = ip
+		i.proxyPort = port
+		i.upstreamPid = 0 // 重置以触发重新检索
+		log.Printf("[WinDivert] 上游代理目标已更新: %s:%d", ip, port)
+	}
+}
+
 // buildFilter 动态构建 WinDivert 过滤字符串
 // 拦截：
 //  1. 出站 TCP (准备劫持)

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/CFM503/goPass/internal/config"
+	"github.com/CFM503/goPass/internal/controller"
 )
 
 // Engine 是 GoPass 透明代理的核心
@@ -31,6 +32,9 @@ type Engine struct {
 
 	// 规则文件在线更新进度（供前端轮询）
 	updateTracker *UpdateTracker
+
+	// 动态线路调度控制器
+	controller *controller.RouteController
 
 	// 运行时统计（供 API 层读取）
 	Stats *Stats
@@ -170,13 +174,26 @@ func New(cfg *config.Config) (*Engine, error) {
 	// 初始化绝对分流路由器（规则文件缺失时 fail-safe）
 	router, _ := NewRouter(cfg.Split.Resolve(), "")
 
-	return &Engine{
+	eng := &Engine{
 		cfg:           cfg,
 		tracker:       NewConnTracker(cfg.System.ConnTrackGCInterval, cfg.System.ConnTrackTTL),
 		router:        router,
 		updateTracker: NewUpdateTracker(),
 		Stats:         stats,
-	}, nil
+	}
+
+	// 初始化动态线路调度控制器
+	ctrl := controller.NewRouteController(cfg.AutomaticRoute, func(r *controller.Route) {
+		eng.UpdateUpstream(r.Protocol, r.Address, r.Port, "")
+	})
+	eng.controller = ctrl
+
+	return eng, nil
+}
+
+// Controller 返回动态线路调度器实例
+func (e *Engine) Controller() *controller.RouteController {
+	return e.controller
 }
 
 // startGC 确保后台挂机（没有用户打开界面调用 GetActive）时，不会造成 directItems 内存 OOM
@@ -265,6 +282,13 @@ func (e *Engine) Start() error {
 	// 启动规则文件自动更新
 	e.startAutoUpdate()
 
+	// 启动动态线路调度器
+	if e.controller != nil {
+		if err := e.controller.Start(); err != nil {
+			log.Printf("[Engine] ⚠️ 动态线路调度器启动异常: %v", err)
+		}
+	}
+
 	log.Println("[Engine] 所有组件启动完毕，开始透明代理...")
 	return nil
 }
@@ -304,6 +328,11 @@ func (e *Engine) UpdateUpstream(pType, addr string, port int, saveFile string) {
 		e.tproxy.UpdateUpstream(pType, newAddr)
 	}
 
+	// 同步通知 WinDivert 拦截器更新上游代理过滤与 PID 排除
+	if e.interceptor != nil {
+		e.interceptor.SetProxyAddr(addr, uint16(port))
+	}
+
 	// 持久化配置文件
 	if saveFile != "" {
 		e.cfgMu.RLock()
@@ -319,6 +348,10 @@ func (e *Engine) UpdateUpstream(pType, addr string, port int, saveFile string) {
 
 // Stop 停止引擎
 func (e *Engine) Stop() {
+	// 停止动态线路调度器
+	if e.controller != nil {
+		e.controller.Stop()
+	}
 	// 停止规则自动更新
 	e.stopAutoUpdate()
 	// 停止 DNS 中继

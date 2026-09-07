@@ -32,8 +32,8 @@ A high-performance, Zero-Copy transparent proxy for Windows, tailored for extrem
 ## 📥 Installation & Usage / 安装与使用
 
 1. **Download / 下载**  
-   Compile from source using `go build` or download the ultra-slim release executable `gopass_1.5.2.exe`.  
-   根据源码自行编译，或直接下载极限瘦身的成品执行文件 `gopass_1.5.2.exe`。
+   Compile from source using `go build` or download the ultra-slim release executable `gopass_1.6.0.exe`.  
+   根据源码自行编译，或直接下载极限瘦身的成品执行文件 `gopass_1.6.0.exe`。
 
 2. **Run as Administrator / 提权运行**  
    ⚠️ GoPass **MUST** be run as Administrator because the `WinDivert` driver requires high-level system permissions.  
@@ -50,6 +50,24 @@ A high-performance, Zero-Copy transparent proxy for Windows, tailored for extrem
 5. **Whitelist Processes / 进程白名单**  
    By default, GoPass operates in `Whitelist` mode. Go to the `Dashboard` and click **Add to Rules** for applications you wish to route through the proxy.  
    默认处于 `Whitelist（白名单）` 劫持模式。在仪表盘看见目标软件后，轻轻一点 **Add to Rules**，流量即刻起飞。
+
+---
+
+## 📝 Release Notes / 更新日志 (v1.6.0)
+
+- **🔀 核心重磅升级：Windows 全局透明代理 + 动态线路调度中心 (Dynamic Route Controller)**：
+  - 将 GoPass 从“固定上游代理”升级为**全局透明代理与动态调度控制中心**。
+  - **9 状态线路状态机 (State Machine)**：严密管理 `UNKNOWN`, `TESTING`, `READY`, `ACTIVE`, `DEGRADED`, `FAILING`, `FAILED`, `RECOVERING`, `STANDBY`，严禁非法跳跃（如禁止直接 ACTIVE -> FAILED 悬崖跳跃），状态流转具备严格守卫条件。
+  - **多维度综合评分 (Scorer)**：拒绝“低 Ping = 最佳”，综合加权速度（含最低速度保证）、稳定性指数、丢包率、Jitter、RTT 延迟、握手状态与时段系数；分 Normal Mode 与 Peak Mode 两套自适应权重。
+  - **历史多窗口平滑计分 (Historical Smoothing)**：融合 `InstantScore`（40%）、`ShortTermScore`（40%，5~15分钟 EWMA 平滑）与 `LongTermScore`（20%，数小时平滑），杜绝单次瞬时虚高测速颠覆长期稳定节点。
+  - **自适应高峰期策略 (Peak Hour Strategy)**：支持 `auto` / `scheduled` / `always` / `never`，维护 24 小时每时段聚合指标（平均/最低速度、RTT、丢包、Jitter、失败率），随时间自动感知高峰期并倾斜稳定与低丢包权重。
+  - **温备用池 (Warm Standby)**：维护 1 个 `ACTIVE` 节点与前 3 个高分 `STANDBY` 热备节点；实施分级轻量心跳探测（Active 5s 高频、Standby 30s 低频、Failed 120s 恢复探测，并发控制池），控制 CPU 与网络开销。
+  - **防抖动机制 (Anti-Flapping)**：具备 `SwitchThreshold` 门槛分差、`SwitchCooldown` 冷却时间、`MinimumStableTime` 稳定观察期、`FailureThreshold` 连续失败门槛与 `RecoveryThreshold` 恢复门槛，彻底防止 A<->B 频繁来回震荡。
+  - **零中断平滑热切 (Zero Downtime Hot Upstream Switching)**：利用 GoPass 现有 `UpdateUpstream()` 与原子替换机制；切换节点时，**已有长连接（如 YouTube 4K、大文件下载、SSH 等）继续由旧节点套接字转发，绝不断流！新连接瞬间接入新节点！**
+  - **视频/长连接防误切保护**：短时间（如 3 秒）测速波动不切，仅在持续劣变（>20秒且丢包/抖动抬升）才进入 DEGRADED，全面保护影音流媒体体验。
+  - **CFST 数据无缝接入**：GoPass 自身零依赖、不复制代码、不侵入 GOWAY 与 CFST；通过标准 RESTful 接口 `POST /api/routes/report` 接收外部 CFST 或测试工具的质量指标 JSON，支持单条或批量。
+  - **RESTful API 矩阵**：提供 `/api/routes`, `/api/routes/current`, `/api/routes/standby`, `/api/routes/metrics`, `/api/routes/switch`, `/api/routes/enable`, `/api/routes/disable`, `/api/routes/report`。
+  - **异步周期持久化**：内存高速运行，每 5 分钟异步批量持久化时段统计与线路数据至 `routes_history.json`，零磁盘 I/O 阻塞。
 
 ---
 
@@ -156,6 +174,160 @@ split:
 ### Web UI
 
 `Settings → Split Routing (绝对分流)`：一键开关、模式选择、优先级、IPv6/UDP 策略、DNS 中继、自定义直连/代理列表（一行一条）、规则文件在线更新，并实时显示 geosite:cn / geoip:cn 规则加载统计。
+
+---
+
+## 🔀 Dynamic Route Controller (动态线路调度中心)
+
+GoPass v1.6.0 引入了**动态线路调度器**，使 GoPass 正式成为整个系统的调度控制中心。
+
+### 架构流程
+
+```
+Windows 应用程序
+      ↓
+  WinDivert (网卡底层拦截)
+      ↓
+    GoPass (透明代理内核)
+      ↓
+Dynamic Route Controller (多维度打分 / 状态机 / 防抖)
+      ↓
+当前最优 GOWAY 节点 (SOCKS5 / HTTP)
+      ↓
+    GOWAY (外部高速隧道)
+      ↓
+   Internet
+```
+
+> ⚠️ **无侵入设计**：GOWAY 与 CFST 均为独立外部程序，GoPass 不依赖、不修改、不复制代码。GoPass 仅将 GOWAY 提供的本地/远端代理端口视为待调度线路，接收外部测速数据后调度最佳上游。
+
+### 1. 线路状态机 (9 种状态流转)
+
+每条线路具备明确的生命周期状态：
+- `UNKNOWN`: 未初始化状态。
+- `TESTING`: 正在进行连通性轻量校验。
+- `READY`: 测量健康、就绪的候选线路。
+- `ACTIVE`: 当前正在承担流量转发的最优活跃线路。
+- `DEGRADED`: 出现持续劣变（对长连接有缓冲保护，防止 3 秒临时抖动误切）。
+- `FAILING`: 劣变加剧，健康探测连续失败。
+- `FAILED`: 连续失败达到 `failure_threshold`（默认 3 次），被判定为故障。
+- `RECOVERING`: 故障线路在恢复探测中成功建连，开始观察复苏。
+- `STANDBY`: 健康度与评分维持在前 N 名（默认 3 条）的温备用线路。
+
+严禁非法跨状态跃迁（如禁止直接 `ACTIVE -> ACTIVE` 或直接跳崖 `ACTIVE -> FAILED`，故障必须经过降级确认）。
+
+### 2. 线路评分与历史多窗口平滑
+
+拒绝“Ping 最低 = 最佳”的片面策略，采用综合加权评分：
+- **Normal Mode**: Speed 30%, Stability 25%, PacketLoss 15%, Jitter 15%, Latency 10%, Handshake 5%
+- **Peak Mode**: Stability 30%, Speed 30%, PacketLoss 20%, Jitter 15%, Latency 5%
+- **多窗口历史平滑**：
+  $$\text{FinalScore} = \text{Instant} \times 0.4 + \text{ShortTerm} \times 0.4 + \text{LongTerm} \times 0.2$$
+  融合瞬时测速、近期 5~15 分钟 EWMA 平滑与数小时长期表现，有效杜绝偶发虚高测速节点把长期稳定节点顶掉。
+
+### 3. 高峰期时段自适应 (Peak Hour Strategy)
+
+- 模式支持：`auto` | `scheduled` | `always` | `never`。
+- 自动按小时（0 ~ 23）聚合并记录各线路的历史平均速度、最低速度、RTT、丢包率、Jitter 与失败率。
+- 系统随时间持续学习，自动感知夜间高峰网络拥堵并切换至偏向稳定和低丢包的高峰计分策略。
+
+### 4. 温备用池 (Warm Standby)
+
+- 维护 1 条 `ACTIVE` 线路和前 3 条 `STANDBY` 备用线路。
+- **分级低开销探测**：
+  - `Active` 线路：高频检测（默认 5s），快速感知异常。
+  - `Standby` 线路：低频检测（默认 30s），保证随时可顶上。
+  - `Failed` 线路：超低频恢复检测（默认 120s）。
+- 仅执行 SOCKS5 握手认证或 TCP 探活，单次仅传输数个字节，绝不高频全速压测，控制系统开销。
+
+### 5. 防频繁抖动 (Anti-Flapping) 与平滑热切
+
+- **防抖条件**：
+  1. 新线路评分必须高于当前活跃线路评分至少 `switch_threshold`（默认 5.0 分）。
+  2. 距离上次切换必须超过 `switch_cooldown`（默认 60s），除非当前线路已彻底故障。
+  3. 候选新线路必须持续保持高分超过 `minimum_stable_time`（默认 30s）。
+- **零中断平滑热切**：
+  - 切换线路时，仅热更上游 Dialer 缓存；
+  - **已有的长连接（如 YouTube 4K 播放、大文件下载等）继续由原有线路套接字转发，绝不杀掉旧连接，绝不断流！**
+  - **新发起的网络请求立即使用新选出的最优线路建连。**
+
+### 6. 配置示例 (`config.json` -> `automatic_route`)
+
+```json
+"automatic_route": {
+  "enabled": true,
+  "check_interval": 5,
+  "standby_check_interval": 30,
+  "recover_check_interval": 120,
+  "switch_threshold": 5.0,
+  "switch_cooldown": 60,
+  "minimum_stable_time": 30,
+  "failure_threshold": 3,
+  "recovery_threshold": 3,
+  "peak_mode": "auto",
+  "peak_start_hour": 18,
+  "peak_end_hour": 23,
+  "history_window": 60,
+  "standby_count": 3,
+  "max_probe_concurrency": 4,
+  "history_file": "routes_history.json",
+  "history_save_interval": 300,
+  "routes": [
+    {
+      "id": "goway-01",
+      "name": "GOWAY 香港节点",
+      "address": "127.0.0.1",
+      "port": 9192,
+      "protocol": "socks5",
+      "type": "goway"
+    },
+    {
+      "id": "goway-02",
+      "name": "GOWAY 日本节点",
+      "address": "127.0.0.1",
+      "port": 9193,
+      "protocol": "socks5",
+      "type": "goway"
+    }
+  ]
+}
+```
+
+### 7. RESTful API 列表
+
+| 接口 | 方法 | 说明 |
+|---|---|---|
+| `/api/routes` | GET | 返回所有线路状态、当前评分与自动调度开关状态 |
+| `/api/routes` | POST | 动态注册或修改线路配置 |
+| `/api/routes` | DELETE | 删除指定线路（需提供 `id`） |
+| `/api/routes/current` | GET | 返回当前活跃的线路详情与状态快照 |
+| `/api/routes/standby` | GET | 返回当前处于就绪状态的温备用线路列表 |
+| `/api/routes/metrics` | GET | 返回各线路当前的综合测量指标 |
+| `/api/routes/switch` | POST | 手动切换到指定线路（`{"id": "goway-02"}`） |
+| `/api/routes/enable` | POST | 开启自动线路调度 |
+| `/api/routes/disable` | POST | 关闭自动线路调度（固定当前线路） |
+| `/api/routes/report` | POST | 接收外部 CFST / 探测脚本上报的测速指标 JSON（支持单个或数组） |
+
+### 8. 外部 CFST 数据上报示例
+
+外部测试工具（如 CFST 独立进程或 Python 脚本）通过 HTTP POST 发送指标，格式如下：
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/routes/report \
+  -H "Content-Type: application/json" \
+  -d '[
+    {
+      "id": "goway-01",
+      "download_speed": 45000000,
+      "min_speed": 35000000,
+      "stability": 0.98,
+      "packet_loss": 0.00,
+      "jitter": 1.5,
+      "rtt": 35.0,
+      "handshake_success": true
+    }
+  ]'
+```
 
 ---
 

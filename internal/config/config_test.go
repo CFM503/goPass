@@ -107,3 +107,36 @@ func TestNormalizeSplitPartial(t *testing.T) {
 		t.Errorf("rule_files 应默认 geosite.dat/geoip.dat, got %+v", n.RuleFiles)
 	}
 }
+
+func TestAutomaticRouteConfigDefaults(t *testing.T) {
+	c := DefaultConfig()
+	if c.AutomaticRoute.CheckInterval != 5 {
+		t.Errorf("CheckInterval = %d, want 5", c.AutomaticRoute.CheckInterval)
+	}
+	if c.AutomaticRoute.SwitchThreshold != 5.0 {
+		t.Errorf("SwitchThreshold = %f, want 5.0", c.AutomaticRoute.SwitchThreshold)
+	}
+	if c.AutomaticRoute.FailureThreshold != 3 {
+		t.Errorf("FailureThreshold = %d, want 3", c.AutomaticRoute.FailureThreshold)
+	}
+	if c.AutomaticRoute.RecoveryThreshold != 3 {
+		t.Errorf("RecoveryThreshold = %d, want 3", c.AutomaticRoute.RecoveryThreshold)
+	}
+	if len(c.AutomaticRoute.Routes) == 0 {
+		t.Error("默认应该包含至少 1 条初始线路")
+	}
+
+	// 测试旧版配置反序列化（无 automatic_route 块时自动填充默认值）
+	old := `{"api":{},"system":{}}`
+	var c2 Config
+	if err := json.Unmarshal([]byte(old), &c2); err != nil {
+		t.Fatal(err)
+	}
+	if c2.AutomaticRoute.CheckInterval != 5 {
+		t.Errorf("c2.AutomaticRoute.CheckInterval = %d, want 5", c2.AutomaticRoute.CheckInterval)
+	}
+	if c2.AutomaticRoute.StandbyCount != 3 {
+		t.Errorf("c2.AutomaticRoute.StandbyCount = %d, want 3", c2.AutomaticRoute.StandbyCount)
+	}
+}
+

@@ -24,6 +24,7 @@ go.work.sum
 
 # GoPass specific
 config.json
+routes_history.json*
 release/
 
 # Geo rule files (optional disk overrides, downloaded via .tools\download.ps1 or UI "Update Rule Files")
