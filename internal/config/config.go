@@ -278,11 +278,15 @@ func NormalizeAutomaticRoute(a AutomaticRouteConfig) AutomaticRouteConfig {
 	if a.SwitchThreshold <= 0 {
 		a.SwitchThreshold = def.SwitchThreshold
 	}
-	if a.SwitchCooldown <= 0 {
+	if a.SwitchCooldown == 0 {
 		a.SwitchCooldown = def.SwitchCooldown
+	} else if a.SwitchCooldown < 0 {
+		a.SwitchCooldown = 0
 	}
-	if a.MinimumStableTime <= 0 {
+	if a.MinimumStableTime == 0 {
 		a.MinimumStableTime = def.MinimumStableTime
+	} else if a.MinimumStableTime < 0 {
+		a.MinimumStableTime = 0
 	}
 	if a.FailureThreshold <= 0 {
 		a.FailureThreshold = def.FailureThreshold

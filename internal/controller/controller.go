@@ -47,15 +47,20 @@ type RouteController struct {
 	onSwitch    func(r *Route)
 	autoEnabled atomic.Bool
 
-	switchMu    sync.Mutex
-	lastSwitch  time.Time
+	switchMu             sync.Mutex
+	lastSwitch           time.Time
+	candidateID          string
+	candidateStableSince time.Time
+	candidateLastSeen    time.Time
 
-	stopCh      chan struct{}
-	wg          sync.WaitGroup
+	stopOnce sync.Once
+	stopCh   chan struct{}
+	wg       sync.WaitGroup
 }
 
 // NewRouteController 创建调度中心
 func NewRouteController(cfg config.AutomaticRouteConfig, onSwitch func(r *Route)) *RouteController {
+	cfg = config.NormalizeAutomaticRoute(cfg)
 	c := &RouteController{
 		cfg:         cfg,
 		routes:      make(map[string]*Route),
@@ -92,10 +97,10 @@ func NewRouteController(cfg config.AutomaticRouteConfig, onSwitch func(r *Route)
 // Start 启动后台探测与调度循环
 func (c *RouteController) Start() error {
 	c.routesMu.Lock()
-	// 若尚未有 Active 线路，选出第一条就绪线路设为 Active
+	// 若尚未有 Active 线路，按配置顺序选出第一条就绪线路设为 Active (保证配置顺序确定性)
 	if c.activeRoute == nil && len(c.routes) > 0 {
-		for _, r := range c.routes {
-			if r.State == StateReady || r.State == StateStandby {
+		for _, rc := range c.cfg.Routes {
+			if r, ok := c.routes[rc.ID]; ok && (r.State == StateReady || r.State == StateStandby) {
 				_ = r.TransitionTo(StateActive)
 				c.activeRoute = r
 				c.lastSwitch = time.Now()
@@ -104,6 +109,20 @@ func (c *RouteController) Start() error {
 					c.onSwitch(r)
 				}
 				break
+			}
+		}
+		if c.activeRoute == nil {
+			for _, r := range c.routes {
+				if r.State == StateReady || r.State == StateStandby {
+					_ = r.TransitionTo(StateActive)
+					c.activeRoute = r
+					c.lastSwitch = time.Now()
+					log.Printf("[RouteController] 初始化激活首选线路: [%s] %s (%s:%d)", r.ID, r.Name, r.Address, r.Port)
+					if c.autoEnabled.Load() && c.onSwitch != nil {
+						c.onSwitch(r)
+					}
+					break
+				}
 			}
 		}
 	}
@@ -117,27 +136,24 @@ func (c *RouteController) Start() error {
 	return nil
 }
 
-// Stop 停止调度引擎并优雅持久化
+// Stop 停止调度引擎并优雅持久化 (幂等安全，支持并发或重复调用)
 func (c *RouteController) Stop() {
-	select {
-	case <-c.stopCh:
-		return
-	default:
+	c.stopOnce.Do(func() {
 		close(c.stopCh)
-	}
-	c.wg.Wait()
+		c.wg.Wait()
 
-	// 退出前同步持久化
-	c.routesMu.RLock()
-	var list []*Route
-	for _, r := range c.routes {
-		list = append(list, r)
-	}
-	hourly := c.peakTracker.GetAllStats()
-	c.routesMu.RUnlock()
+		// 退出前同步持久化
+		c.routesMu.RLock()
+		var list []*Route
+		for _, r := range c.routes {
+			list = append(list, r)
+		}
+		hourly := c.peakTracker.GetAllStats()
+		c.routesMu.RUnlock()
 
-	c.storage.SaveAsync(list, hourly)
-	log.Println("[RouteController] 动态线路调度引擎已停止")
+		c.storage.SaveAsync(list, hourly)
+		log.Println("[RouteController] 动态线路调度引擎已停止")
+	})
 }
 
 // EnableAuto 启用自动调度
@@ -268,21 +284,25 @@ func (c *RouteController) SwitchTo(targetID string, manual bool) error {
 		return nil // 已经是当前线路
 	}
 
-	// 手动切换无视冷却和门槛；自动切换在 Evaluate 中已校验
 	now := time.Now()
-	if !manual {
+	// 紧急故障转移判定：若当前没有活跃线路、或当前线路非 Active 状态、或连续失败达到阈值，允许立即切换无视冷却
+	isEmergency := current == nil || current.GetState() != StateActive || current.GetMetrics().FailureCount >= c.cfg.FailureThreshold
+
+	if !manual && !isEmergency {
 		cooldown := time.Duration(c.cfg.SwitchCooldown) * time.Second
-		if current != nil && current.GetState() == StateActive && now.Sub(c.lastSwitch) < cooldown {
+		if current != nil && now.Sub(c.lastSwitch) < cooldown {
 			c.routesMu.Unlock()
 			return fmt.Errorf("处于切换冷却期中 (已过 %v, 需 %v)", now.Sub(c.lastSwitch).Round(time.Second), cooldown)
 		}
 	}
 
-	// 状态机流转
+	// 状态机流转：确保系统有且仅有唯一一个 ACTIVE 线路
 	if current != nil {
-		if current.GetState() == StateActive {
+		currState := current.GetState()
+		if currState == StateActive || currState == StateDegraded {
 			_ = current.TransitionTo(StateStandby)
 		}
+		// 若当前原线路已是 FAILING 或 FAILED，保持其故障状态，绝不转为 STANDBY
 	}
 
 	if target.GetState() != StateActive {
@@ -291,11 +311,15 @@ func (c *RouteController) SwitchTo(targetID string, manual bool) error {
 
 	c.activeRoute = target
 	c.lastSwitch = now
+	c.candidateID = ""
+	c.candidateStableSince = time.Time{}
+	c.candidateLastSeen = time.Time{}
+
 	c.updateStandbyListLocked()
 	c.routesMu.Unlock()
 
 	log.Printf("[RouteController] 🚀 线路已切换为: [%s] %s (%s:%d), 综合分: %.1f",
-		target.ID, target.Name, target.Address, target.Port, target.Metrics.Score)
+		target.ID, target.Name, target.Address, target.Port, target.GetScore())
 
 	// 回调 GoPass Engine 触发真正的 UpdateUpstream (新连接使用新线路，旧连接不断)
 	if c.onSwitch != nil {
@@ -331,8 +355,30 @@ func (c *RouteController) ReportMetrics(reports []RouteMetricReport) {
 		}
 		c.routesMu.Unlock()
 
-		// 更新指标与历史加权打分
-		r.UpdateMetrics(func(m *RouteMetrics) {
+		// 判定探测结果语义：明确成功(1), 明确失败(-1), 指标缺失/未测(0)
+		var probeStatus int
+		handshakeProvided := rep.HandshakeSuccess != nil
+		if handshakeProvided {
+			if !*rep.HandshakeSuccess || rep.PacketLoss >= 1.0 {
+				probeStatus = -1
+			} else {
+				probeStatus = 1
+			}
+		} else {
+			// 未提供握手指标，不能无条件凭空制造成功
+			if rep.PacketLoss >= 1.0 {
+				probeStatus = -1
+			} else if (rep.DownloadSpeed > 0 || rep.SingleSpeed > 0 || rep.RTT > 0) && rep.PacketLoss < 1.0 {
+				// 有真实有效测速/延迟数据且未丢包，判定本次测试成功
+				probeStatus = 1
+			} else {
+				// 无握手且无有效测速数据，中立未测
+				probeStatus = 0
+			}
+		}
+
+		// 更新指标并返回安全副本（避免二次裸读 data race）
+		updatedMetrics := r.UpdateMetrics(func(m *RouteMetrics) {
 			m.RTT = rep.RTT
 			m.PacketLoss = rep.PacketLoss
 			m.Jitter = rep.Jitter
@@ -347,18 +393,22 @@ func (c *RouteController) ReportMetrics(reports []RouteMetricReport) {
 				m.Stability = rep.Stability
 			}
 			m.LoadLatency = rep.LoadLatency
-			if rep.HandshakeSuccess != nil {
+			m.HandshakeKnown = handshakeProvided
+			if handshakeProvided {
 				m.HandshakeSuccess = *rep.HandshakeSuccess
-			} else {
-				m.HandshakeSuccess = true
 			}
 
-			if m.HandshakeSuccess {
+			if probeStatus == 1 {
+				m.ProbeSuccess = true
 				m.SuccessCount++
 				m.FailureCount = 0
-			} else {
+			} else if probeStatus == -1 {
+				m.ProbeSuccess = false
 				m.FailureCount++
 				m.SuccessCount = 0
+			} else {
+				// 未提供有效测试数据，不增加成功次数，也不递增失败次数
+				m.ProbeSuccess = false
 			}
 
 			// 计分
@@ -366,32 +416,43 @@ func (c *RouteController) ReportMetrics(reports []RouteMetricReport) {
 		})
 
 		// 记录时段样本
-		rSnap := r.Snapshot()
-		c.peakTracker.RecordSample(r.ID, now, &rSnap.Metrics)
+		c.peakTracker.RecordSample(r.ID, now, &updatedMetrics)
 
-		// 状态机感知：
-		// 1. 如果连续失败达到阈值 -> FAILED
-		if rSnap.Metrics.FailureCount >= c.cfg.FailureThreshold {
-			if rSnap.State == StateActive {
+		// 状态机感知
+		currState := r.GetState()
+		if updatedMetrics.FailureCount >= c.cfg.FailureThreshold {
+			if currState == StateActive {
 				_ = r.TransitionTo(StateDegraded)
 				_ = r.TransitionTo(StateFailing)
 				_ = r.TransitionTo(StateFailed)
-			} else if rSnap.State != StateFailed && rSnap.State != StateRecovering {
+			} else if currState != StateFailed && currState != StateRecovering {
 				_ = r.TransitionTo(StateFailed)
 			}
-		} else if rSnap.State == StateFailed && rSnap.Metrics.HandshakeSuccess {
+		} else if currState == StateFailed && probeStatus == 1 {
 			_ = r.TransitionTo(StateRecovering)
-		} else if rSnap.State == StateRecovering && rSnap.Metrics.SuccessCount >= c.cfg.RecoveryThreshold {
-			_ = r.TransitionTo(StateReady)
-		} else if rSnap.State == StateActive {
-			// 视频/长连接特殊处理：如果只是瞬时速度下降且丢包不高，不轻易进 DEGRADED
-			if rSnap.Metrics.PacketLoss > 0.15 || rSnap.Metrics.Jitter > 60 {
-				r.degradedStreak += 5 * time.Second
-				if r.degradedStreak >= 20*time.Second {
+		} else if currState == StateRecovering {
+			if probeStatus == 1 && updatedMetrics.SuccessCount >= c.cfg.RecoveryThreshold {
+				_ = r.TransitionTo(StateReady)
+				log.Printf("[RouteController] ✅ 线路已恢复可用: [%s] %s", r.ID, r.Name)
+			} else if probeStatus == -1 {
+				_ = r.TransitionTo(StateFailed)
+			}
+		} else if currState == StateActive {
+			// 使用真实物理时间跟踪连续劣变防视频误切
+			if updatedMetrics.PacketLoss > 0.15 || updatedMetrics.Jitter > 60 {
+				degSince := r.GetDegradedSince()
+				if degSince.IsZero() {
+					r.SetDegradedSince(now)
+				} else if now.Sub(degSince) >= 20*time.Second {
 					_ = r.TransitionTo(StateDegraded)
 				}
 			} else {
-				r.degradedStreak = 0
+				r.SetDegradedSince(time.Time{})
+			}
+		} else if currState == StateDegraded {
+			if updatedMetrics.PacketLoss <= 0.15 && updatedMetrics.Jitter <= 60 && probeStatus == 1 {
+				r.SetDegradedSince(time.Time{})
+				_ = r.TransitionTo(StateActive)
 			}
 		}
 	}
@@ -428,50 +489,65 @@ func (c *RouteController) Evaluate() {
 		return
 	}
 
-	// 按评分从高到低排序候选线路
+	// 按评分从高到低排序候选线路（使用线程安全只读方法，避免数据竞争）
 	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].Metrics.Score > candidates[j].Metrics.Score
+		return candidates[i].GetScore() > candidates[j].GetScore()
 	})
 	bestCandidate := candidates[0]
+	bestScore := bestCandidate.GetScore()
 
 	now := time.Now()
 
-	// Case 1: 当前没有活跃线路，或当前活跃线路已 FAILED / FAILING
-	if current == nil || current.GetState() == StateFailed || current.GetState() == StateFailing {
+	// Case 1: 当前没有活跃线路，或当前活跃线路已故障/连续失败超标（紧急故障转移）
+	isCurrentFaulty := current == nil || current.GetState() == StateFailed || current.GetState() == StateFailing || (current.GetState() == StateDegraded && current.GetMetrics().FailureCount >= c.cfg.FailureThreshold)
+	if isCurrentFaulty {
 		log.Printf("[RouteController] 当前线路异常 (%v)，紧急晋升最优候选: [%s] %.1f分",
-			current, bestCandidate.ID, bestCandidate.Metrics.Score)
-		_ = c.SwitchTo(bestCandidate.ID, false)
+			current, bestCandidate.ID, bestScore)
+		_ = c.SwitchTo(bestCandidate.ID, true) // emergency = true, 无视冷却
 		return
 	}
 
-	// Case 2: 当前线路处于正常 ACTIVE 或 DEGRADED
-	// 检查切换冷却时间
+	// Case 2: 当前线路处于正常 ACTIVE 或轻度 DEGRADED
 	cooldown := time.Duration(c.cfg.SwitchCooldown) * time.Second
 	if now.Sub(c.lastSwitch) < cooldown {
 		return
 	}
 
+	currentScore := current.GetScore()
 	// 检查新线路分值门槛：NewScore > CurrentScore + Threshold
-	currentScore := current.Metrics.Score
-	if bestCandidate.Metrics.Score <= currentScore+c.cfg.SwitchThreshold {
-		bestCandidate.firstHighAt = time.Time{} // 重置稳定计时
+	if bestScore <= currentScore+c.cfg.SwitchThreshold {
+		c.switchMu.Lock()
+		c.candidateID = ""
+		c.candidateStableSince = time.Time{}
+		c.candidateLastSeen = time.Time{}
+		c.switchMu.Unlock()
 		return
 	}
 
-	// 检查候选线路持续稳定时间 MinimumStableTime
-	if bestCandidate.firstHighAt.IsZero() {
-		bestCandidate.firstHighAt = now
-		return
-	}
+	// 候选防抖与持续稳定时间检查 (统一在 Controller 状态机维护，避免跨轮次残留旧时间)
 	stableTime := time.Duration(c.cfg.MinimumStableTime) * time.Second
-	if now.Sub(bestCandidate.firstHighAt) < stableTime {
-		// 稳定时间尚未满足，继续观察
-		return
+	if stableTime > 0 {
+		c.switchMu.Lock()
+		if c.candidateID != bestCandidate.ID || c.candidateStableSince.IsZero() || now.Sub(c.candidateLastSeen) > 30*time.Second {
+			c.candidateID = bestCandidate.ID
+			c.candidateStableSince = now
+			c.candidateLastSeen = now
+			c.switchMu.Unlock()
+			return
+		}
+		c.candidateLastSeen = now
+		stableSince := c.candidateStableSince
+		c.switchMu.Unlock()
+
+		if now.Sub(stableSince) < stableTime {
+			// 稳定时间尚未满足，继续观察
+			return
+		}
 	}
 
 	// 满足防抖与抗劣变条件，执行平滑切换
 	log.Printf("[RouteController] 满足切换条件: 候选 [%s](%.1f分) 优于当前 [%s](%.1f分) 超过门槛 %.1f 且持续稳定 %v",
-		bestCandidate.ID, bestCandidate.Metrics.Score, current.ID, currentScore, c.cfg.SwitchThreshold, stableTime)
+		bestCandidate.ID, bestScore, current.ID, currentScore, c.cfg.SwitchThreshold, stableTime)
 	_ = c.SwitchTo(bestCandidate.ID, false)
 }
 
@@ -483,13 +559,14 @@ func (c *RouteController) updateStandbyListLocked() {
 			continue
 		}
 		st := r.GetState()
+		// 严禁 FAILED, RECOVERING, FAILING, DEGRADED 进入 Standby 备用池
 		if st == StateReady || st == StateStandby {
 			list = append(list, r)
 		}
 	}
 
 	sort.Slice(list, func(i, j int) bool {
-		return list[i].Metrics.Score > list[j].Metrics.Score
+		return list[i].GetScore() > list[j].GetScore()
 	})
 
 	maxCount := c.cfg.StandbyCount
@@ -592,8 +669,10 @@ func (c *RouteController) probeActive() {
 	now := time.Now()
 	isPeak := c.peakTracker.IsPeakHour(now, c.cfg.PeakMode, c.cfg.PeakStartHour, c.cfg.PeakEndHour)
 
-	active.UpdateMetrics(func(m *RouteMetrics) {
+	updated := active.UpdateMetrics(func(m *RouteMetrics) {
+		m.HandshakeKnown = true
 		m.HandshakeSuccess = res.Success
+		m.ProbeSuccess = res.Success
 		if res.Success {
 			m.RTT = res.RTT
 			m.FailureCount = 0
@@ -606,7 +685,7 @@ func (c *RouteController) probeActive() {
 	})
 
 	if !res.Success {
-		failCount := active.Metrics.FailureCount
+		failCount := updated.FailureCount
 		log.Printf("[RouteController] ⚠️ Active 线路探测失败 [%s] (连续失败 %d 次): %v", active.ID, failCount, res.Err)
 		if failCount == 1 {
 			_ = active.TransitionTo(StateDegraded)
@@ -616,7 +695,7 @@ func (c *RouteController) probeActive() {
 		}
 		c.Evaluate()
 	} else if active.GetState() == StateDegraded {
-		// 恢复健康
+		active.SetDegradedSince(time.Time{})
 		_ = active.TransitionTo(StateActive)
 	}
 }
@@ -633,8 +712,10 @@ func (c *RouteController) probeStandbys() {
 
 	for _, r := range standbys {
 		res := c.prober.ProbeRoute(r)
-		r.UpdateMetrics(func(m *RouteMetrics) {
+		updated := r.UpdateMetrics(func(m *RouteMetrics) {
+			m.HandshakeKnown = true
 			m.HandshakeSuccess = res.Success
+			m.ProbeSuccess = res.Success
 			if res.Success {
 				m.RTT = res.RTT
 				m.FailureCount = 0
@@ -645,7 +726,7 @@ func (c *RouteController) probeStandbys() {
 			}
 			c.scorer.UpdateRouteScores(m, isPeak)
 		})
-		if !res.Success && r.Metrics.FailureCount >= c.cfg.FailureThreshold {
+		if !res.Success && updated.FailureCount >= c.cfg.FailureThreshold {
 			_ = r.TransitionTo(StateFailed)
 		}
 	}
@@ -656,7 +737,8 @@ func (c *RouteController) probeFailed() {
 	c.routesMu.RLock()
 	var failed []*Route
 	for _, r := range c.routes {
-		if r.GetState() == StateFailed || r.GetState() == StateRecovering {
+		st := r.GetState()
+		if st == StateFailed || st == StateRecovering {
 			failed = append(failed, r)
 		}
 	}
@@ -667,19 +749,33 @@ func (c *RouteController) probeFailed() {
 
 	for _, r := range failed {
 		res := c.prober.ProbeRoute(r)
-		if res.Success {
-			r.UpdateMetrics(func(m *RouteMetrics) {
-				m.HandshakeSuccess = true
+		updated := r.UpdateMetrics(func(m *RouteMetrics) {
+			m.HandshakeKnown = true
+			m.HandshakeSuccess = res.Success
+			m.ProbeSuccess = res.Success
+			if res.Success {
 				m.RTT = res.RTT
 				m.SuccessCount++
 				m.FailureCount = 0
-				c.scorer.UpdateRouteScores(m, isPeak)
-			})
-			if r.GetState() == StateFailed {
+			} else {
+				m.FailureCount++
+				m.SuccessCount = 0
+			}
+			c.scorer.UpdateRouteScores(m, isPeak)
+		})
+
+		st := r.GetState()
+		if res.Success {
+			if st == StateFailed {
 				_ = r.TransitionTo(StateRecovering)
-			} else if r.GetState() == StateRecovering && r.Metrics.SuccessCount >= c.cfg.RecoveryThreshold {
+			} else if st == StateRecovering && updated.SuccessCount >= c.cfg.RecoveryThreshold {
 				_ = r.TransitionTo(StateReady)
 				log.Printf("[RouteController] ✅ 线路已恢复可用: [%s] %s", r.ID, r.Name)
+			}
+		} else {
+			// 恢复期再次失败，重置回 FAILED
+			if st == StateRecovering {
+				_ = r.TransitionTo(StateFailed)
 			}
 		}
 	}

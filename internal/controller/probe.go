@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"time"
 )
 
@@ -47,7 +48,7 @@ func (p *Prober) ProbeRoute(r *Route) ProbeResult {
 		Timestamp: now,
 	}
 
-	addr := fmt.Sprintf("%s:%d", r.Address, r.Port)
+	addr := net.JoinHostPort(r.Address, strconv.Itoa(r.Port))
 	start := time.Now()
 
 	d := net.Dialer{Timeout: p.timeout}

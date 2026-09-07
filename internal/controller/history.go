@@ -31,16 +31,17 @@ type HistoryStorage struct {
 	mu       sync.Mutex
 }
 
-// NewHistoryStorage 创建持久化管理器
+// NewHistoryStorage 创建持久化管理器 (若 filePath 为空或 'none' 则不进行磁盘读写)
 func NewHistoryStorage(filePath string) *HistoryStorage {
-	if filePath == "" {
-		filePath = "routes_history.json"
-	}
 	return &HistoryStorage{filePath: filePath}
 }
 
 // SaveAsync 异步批量保存（绝不阻塞主调度与转发）
 func (h *HistoryStorage) SaveAsync(routes []*Route, hourly map[string][24]HourlyStats) {
+	if h.filePath == "" || h.filePath == "none" || h.filePath == ":memory:" {
+		return
+	}
+
 	// 先在调用方锁外完成浅拷贝以减少锁定开销
 	var records []RouteSnapshotRecord
 	for _, r := range routes {
@@ -78,19 +79,20 @@ func (h *HistoryStorage) SaveAsync(routes []*Route, hourly map[string][24]Hourly
 			return
 		}
 
-		// 原子替换
+		// Windows 下若目标存在需要先移除以保证原子替换成功
+		_ = os.Remove(h.filePath)
 		if err := os.Rename(tmpFile, h.filePath); err != nil {
-			// Windows 下若目标存在可能报错，退化处理
-			_ = os.Remove(h.filePath)
-			if err := os.Rename(tmpFile, h.filePath); err != nil {
-				log.Printf("[RouteController] 历史数据原子更新失败: %v", err)
-			}
+			log.Printf("[RouteController] 历史数据原子更新失败: %v", err)
 		}
 	}()
 }
 
 // Load 读取持久化数据
 func (h *HistoryStorage) Load() (*HistoryRecord, error) {
+	if h.filePath == "" || h.filePath == "none" || h.filePath == ":memory:" {
+		return nil, nil
+	}
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
 

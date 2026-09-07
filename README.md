@@ -32,8 +32,8 @@ A high-performance, Zero-Copy transparent proxy for Windows, tailored for extrem
 ## 📥 Installation & Usage / 安装与使用
 
 1. **Download / 下载**  
-   Compile from source using `go build` or download the ultra-slim release executable `gopass_1.6.1.exe`.  
-   根据源码自行编译，或直接下载极限瘦身的成品执行文件 `gopass_1.6.1.exe`。
+   Compile from source using `go build` or download the ultra-slim release executable `gopass_1.6.2.exe`.  
+   根据源码自行编译，或直接下载极限瘦身的成品执行文件 `gopass_1.6.2.exe`。
 
 2. **Run as Administrator / 提权运行**  
    ⚠️ GoPass **MUST** be run as Administrator because the `WinDivert` driver requires high-level system permissions.  
@@ -50,6 +50,20 @@ A high-performance, Zero-Copy transparent proxy for Windows, tailored for extrem
 5. **Whitelist Processes / 进程白名单**  
    By default, GoPass operates in `Whitelist` mode. Go to the `Dashboard` and click **Add to Rules** for applications you wish to route through the proxy.  
    默认处于 `Whitelist（白名单）` 劫持模式。在仪表盘看见目标软件后，轻轻一点 **Add to Rules**，流量即刻起飞。
+
+## 📝 Release Notes / 更新日志 (v1.6.2)
+
+- **🛡️ 调度控制中心专项审计与加固 (Route Controller Hardening)**：
+  - **Health / Failure 判定语义严密化**：严格区分明确成功、明确失败与指标缺失；缺失握手字段绝不盲目制造成功状态；`FailureCount` 与 `SuccessCount` 严格互斥自增与清零。
+  - **真实物理时间劣变跟踪**：彻底废弃基于探测周期的累加方案，改用高精度 `degradedSince` 物理时间戳跟踪连续劣变时长，达到 20 秒稳定退化才流转状态，完全消除视频播放与大文件下载防误切隐患。
+  - **Active / Standby 严格一致性**：保证全系统在任何时刻存在且仅存在唯一一个 `ACTIVE` 节点；`FAILED` 与 `RECOVERING` 节点严禁进入 `Standby` 备用池。
+  - **候选防抖与稳定时间重置**：防抖计时统一收归控制器状态机管理，候选退化或被反超立即清空观察时间，彻底杜绝历史残留时间导致的误切。
+  - **紧急故障转移 (Emergency Failover)**：当当前活跃节点彻底故障（连续失败达到阈值）时，立即启动紧急晋升流程，无视常规切线冷却期，确保高可用不陷于死等。
+  - **严格恢复阶梯 (Recovery Threshold)**：`FAILED` 节点探测成功仅先进入 `RECOVERING`，必须连续成功达到门槛次数才恢复至 `READY`，杜绝诈尸节点颠覆生产。
+  - **并发安全与零宕机热切验证**：完善所有并发读写锁粒度与只读原子快照，消灭多协程竞态风险；经由本地 RFC1928 Mock SOCKS5 测试验证，上游切换期间老长连接绝不断流、新连接秒级走新节点。
+  - **Web 端与系统全栈版本同步**：Web UI 与后端启动内核统一升级至 `v1.6.2`。
+
+---
 
 ## 📝 Release Notes / 更新日志 (v1.6.1)
 

@@ -72,7 +72,11 @@ func NewScorer() *Scorer {
 
 // CalcInstantScore 计算单次测量瞬时评分 (0 ~ 100)
 func (s *Scorer) CalcInstantScore(m *RouteMetrics, isPeak bool) float64 {
-	if !m.HandshakeSuccess {
+	// 明确失败条件：明确握手失败、100%丢包、或既无握手成功也无健康探测可用
+	if (m.HandshakeKnown && !m.HandshakeSuccess) || m.PacketLoss >= 1.0 {
+		return 0.0
+	}
+	if !m.HandshakeSuccess && !m.ProbeSuccess {
 		return 0.0
 	}
 
@@ -124,8 +128,10 @@ func (s *Scorer) CalcInstantScore(m *RouteMetrics, isPeak bool) float64 {
 
 	// 6. 握手分
 	handshakeScore := 100.0
-	if !m.HandshakeSuccess {
+	if m.HandshakeKnown && !m.HandshakeSuccess {
 		handshakeScore = 0.0
+	} else if !m.HandshakeKnown {
+		handshakeScore = 50.0 // 未测试握手时中立，不制造虚假满分
 	}
 
 	total := speedScore*w.Speed +

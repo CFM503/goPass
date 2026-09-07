@@ -32,6 +32,8 @@ type RouteMetrics struct {
 	Stability        float64       `json:"stability"`         // 稳定性指数 (0.0 ~ 1.0)
 	LoadLatency      float64       `json:"load_latency"`      // 负载延迟 (ms)
 	HandshakeSuccess bool          `json:"handshake_success"` // 握手成功状态
+	HandshakeKnown   bool          `json:"handshake_known"`   // 是否包含明确握手检测
+	ProbeSuccess     bool          `json:"probe_success"`     // 本次探测/上报是否判定为健康可用
 	FailureCount     int           `json:"failure_count"`     // 连续失败次数
 	SuccessCount     int           `json:"success_count"`     // 连续成功次数
 	StableDuration   time.Duration `json:"stable_duration"`   // 持续处于稳定高分状态的时长
@@ -57,8 +59,7 @@ type Route struct {
 
 	// 状态计时与内部辅助
 	stateEnteredAt   time.Time
-	degradedStreak   time.Duration // 连续劣变持续时长（用于视频场景防误切）
-	firstHighAt      time.Time     // 首次达到候选高分的时间
+	degradedSince    time.Time     // 连续劣变起始时间（使用真实时间防误切）
 
 	mu sync.RWMutex
 }
@@ -83,6 +84,8 @@ func NewRoute(id, name, address string, port int, protocol, rType string) *Route
 		stateEnteredAt: now,
 		Metrics: RouteMetrics{
 			HandshakeSuccess: true,
+			HandshakeKnown:   false,
+			ProbeSuccess:     true,
 			Stability:        1.0,
 			LastUpdate:       now,
 		},
@@ -161,11 +164,40 @@ func (r *Route) GetState() RouteState {
 	return r.State
 }
 
-// UpdateMetrics 更新指标并计算稳定时长
-func (r *Route) UpdateMetrics(updater func(m *RouteMetrics)) {
+// GetScore 获取当前最新综合评分
+func (r *Route) GetScore() float64 {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.Metrics.Score
+}
+
+// GetMetrics 获取当前最新指标副本
+func (r *Route) GetMetrics() RouteMetrics {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.Metrics
+}
+
+// GetDegradedSince 获取退化起始时间
+func (r *Route) GetDegradedSince() time.Time {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.degradedSince
+}
+
+// SetDegradedSince 设置退化起始时间
+func (r *Route) SetDegradedSince(t time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.degradedSince = t
+}
+
+// UpdateMetrics 更新指标并返回更新后的指标副本（保证调用方无需二次裸读）
+func (r *Route) UpdateMetrics(updater func(m *RouteMetrics)) RouteMetrics {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	updater(&r.Metrics)
 	r.Metrics.LastUpdate = time.Now()
+	return r.Metrics
 }
