@@ -27,6 +27,7 @@ type RouteMetrics struct {
 	PacketLoss       float64       `json:"packet_loss"`       // 丢包率 (0.0 ~ 1.0)
 	Jitter           float64       `json:"jitter"`            // 抖动 (ms)
 	DownloadSpeed    float64       `json:"download_speed"`    // 下载速度 (Bytes/s)
+	SingleSpeed      float64       `json:"single_speed"`      // 单线程测速 (Bytes/s)
 	MinSpeed         float64       `json:"min_speed"`         // 最低瞬时速度 (Bytes/s)
 	Stability        float64       `json:"stability"`         // 稳定性指数 (0.0 ~ 1.0)
 	LoadLatency      float64       `json:"load_latency"`      // 负载延迟 (ms)
@@ -37,6 +38,7 @@ type RouteMetrics struct {
 	LastUpdate       time.Time     `json:"last_update"`       // 指标最后更新时间
 	LastSwitch       time.Time     `json:"last_switch"`       // 线路最后被切换激活时间
 	Score            float64       `json:"score"`             // 当前综合评分 (0 ~ 100)
+	FinalScore       float64       `json:"final_score"`       // 最终综合评分 (等同 Score)
 	InstantScore     float64       `json:"instant_score"`     // 瞬时测量评分
 	ShortTermScore   float64       `json:"short_term_score"`  // 近期平滑评分 (5~15分钟)
 	LongTermScore    float64       `json:"long_term_score"`   // 长期平滑评分 (数小时)

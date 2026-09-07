@@ -81,10 +81,13 @@ func (s *Scorer) CalcInstantScore(m *RouteMetrics, isPeak bool) float64 {
 		w = s.PeakWeights
 	}
 
-	// 1. 速度分 (0 ~ 100)：融合下载速度与最低速度，采用对数饱和曲线
+	// 1. 速度分 (0 ~ 100)：融合下载速度、单线程速度与最低速度，采用对数饱和曲线
 	effSpeed := m.DownloadSpeed
-	if m.MinSpeed > 0 && m.MinSpeed < m.DownloadSpeed {
-		effSpeed = m.DownloadSpeed*0.7 + m.MinSpeed*0.3
+	if m.SingleSpeed > 0 && m.SingleSpeed > effSpeed {
+		effSpeed = m.SingleSpeed
+	}
+	if m.MinSpeed > 0 && m.MinSpeed < effSpeed {
+		effSpeed = effSpeed*0.7 + m.MinSpeed*0.3
 	}
 	speedMB := effSpeed / (1024 * 1024)
 	speedScore := 0.0
@@ -166,4 +169,5 @@ func (s *Scorer) UpdateRouteScores(m *RouteMetrics, isPeak bool) {
 		final = 100
 	}
 	m.Score = final
+	m.FinalScore = final
 }

@@ -23,6 +23,7 @@ type RouteMetricReport struct {
 	PacketLoss       float64  `json:"packet_loss"`
 	Jitter           float64  `json:"jitter"`
 	DownloadSpeed    float64  `json:"download_speed"`
+	SingleSpeed      float64  `json:"single_speed"`
 	MinSpeed         float64  `json:"min_speed"`
 	Stability        float64  `json:"stability"`
 	LoadLatency      float64  `json:"load_latency"`
@@ -99,7 +100,7 @@ func (c *RouteController) Start() error {
 				c.activeRoute = r
 				c.lastSwitch = time.Now()
 				log.Printf("[RouteController] 初始化激活首选线路: [%s] %s (%s:%d)", r.ID, r.Name, r.Address, r.Port)
-				if c.onSwitch != nil {
+				if c.autoEnabled.Load() && c.onSwitch != nil {
 					c.onSwitch(r)
 				}
 				break
@@ -336,6 +337,9 @@ func (c *RouteController) ReportMetrics(reports []RouteMetricReport) {
 			m.PacketLoss = rep.PacketLoss
 			m.Jitter = rep.Jitter
 			m.DownloadSpeed = rep.DownloadSpeed
+			if rep.SingleSpeed > 0 {
+				m.SingleSpeed = rep.SingleSpeed
+			}
 			if rep.MinSpeed > 0 {
 				m.MinSpeed = rep.MinSpeed
 			}
