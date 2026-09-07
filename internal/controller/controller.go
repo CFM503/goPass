@@ -97,37 +97,41 @@ func NewRouteController(cfg config.AutomaticRouteConfig, onSwitch func(r *Route)
 // Start 启动后台探测与调度循环
 func (c *RouteController) Start() error {
 	c.routesMu.Lock()
+	var initialTarget *Route
 	// 若尚未有 Active 线路，按配置顺序选出第一条就绪线路设为 Active (保证配置顺序确定性)
 	if c.activeRoute == nil && len(c.routes) > 0 {
 		for _, rc := range c.cfg.Routes {
 			if r, ok := c.routes[rc.ID]; ok && (r.State == StateReady || r.State == StateStandby) {
-				_ = r.TransitionTo(StateActive)
-				c.activeRoute = r
-				c.lastSwitch = time.Now()
-				log.Printf("[RouteController] 初始化激活首选线路: [%s] %s (%s:%d)", r.ID, r.Name, r.Address, r.Port)
-				if c.autoEnabled.Load() && c.onSwitch != nil {
-					c.onSwitch(r)
+				if err := r.TransitionTo(StateActive); err == nil {
+					c.activeRoute = r
+					c.lastSwitch = time.Now()
+					log.Printf("[RouteController] 初始化激活首选线路: [%s] %s (%s:%d)", r.ID, r.Name, r.Address, r.Port)
+					initialTarget = r
+					break
 				}
-				break
 			}
 		}
 		if c.activeRoute == nil {
 			for _, r := range c.routes {
 				if r.State == StateReady || r.State == StateStandby {
-					_ = r.TransitionTo(StateActive)
-					c.activeRoute = r
-					c.lastSwitch = time.Now()
-					log.Printf("[RouteController] 初始化激活首选线路: [%s] %s (%s:%d)", r.ID, r.Name, r.Address, r.Port)
-					if c.autoEnabled.Load() && c.onSwitch != nil {
-						c.onSwitch(r)
+					if err := r.TransitionTo(StateActive); err == nil {
+						c.activeRoute = r
+						c.lastSwitch = time.Now()
+						log.Printf("[RouteController] 初始化激活首选线路: [%s] %s (%s:%d)", r.ID, r.Name, r.Address, r.Port)
+						initialTarget = r
+						break
 					}
-					break
 				}
 			}
 		}
 	}
 	c.updateStandbyListLocked()
 	c.routesMu.Unlock()
+
+	// 优化锁粒度：解锁后再执行外部 onSwitch 回调，避免外部在 UpdateUpstream 时发生锁嵌套或潜在死锁
+	if initialTarget != nil && c.autoEnabled.Load() && c.onSwitch != nil {
+		c.onSwitch(initialTarget)
+	}
 
 	c.wg.Add(1)
 	go c.tickLoop()
@@ -192,7 +196,7 @@ func (c *RouteController) RegisterRoute(r *Route) error {
 		existing.Type = r.Type
 		existing.mu.Unlock()
 	} else {
-		if r.State == StateUnknown {
+		if r.State == StateUnknown || r.State == StateActive {
 			r.State = StateReady
 		}
 		c.routes[r.ID] = r
@@ -266,6 +270,41 @@ func (c *RouteController) GetMetrics() map[string]RouteMetrics {
 	return res
 }
 
+// CheckActiveConsistency 检查系统内部 Active 线路一致性约束（用于诊断与测试断言）：
+// 1. 遍历所有线路：ACTIVE 状态数量必须始终 <= 1
+// 2. 如果 c.activeRoute != nil，那么 c.activeRoute.GetState() 必须 == StateActive，且 ACTIVE 线路总数严格等于 1
+// 3. 如果 c.activeRoute == nil，那么系统中 ACTIVE 状态总数必须为 0
+func (c *RouteController) CheckActiveConsistency() error {
+	c.routesMu.RLock()
+	defer c.routesMu.RUnlock()
+
+	activeCount := 0
+	for _, r := range c.routes {
+		if r.GetState() == StateActive {
+			activeCount++
+		}
+	}
+
+	if activeCount > 1 {
+		return fmt.Errorf("违反一致性: 系统中存在 %d 条 ACTIVE 线路 (要求 <= 1)", activeCount)
+	}
+
+	if c.activeRoute != nil {
+		st := c.activeRoute.GetState()
+		if st != StateActive {
+			return fmt.Errorf("违反一致性: activeRoute (%s) 状态为 %s (要求 ACTIVE)", c.activeRoute.ID, st)
+		}
+		if activeCount != 1 {
+			return fmt.Errorf("违反一致性: activeRoute 非空但 ACTIVE 线路数量为 %d (要求 1)", activeCount)
+		}
+	} else {
+		if activeCount != 0 {
+			return fmt.Errorf("违反一致性: activeRoute 为空但存在 %d 条 ACTIVE 线路", activeCount)
+		}
+	}
+	return nil
+}
+
 // SwitchTo 手动或自动切换至指定线路
 func (c *RouteController) SwitchTo(targetID string, manual bool) error {
 	c.switchMu.Lock()
@@ -284,6 +323,20 @@ func (c *RouteController) SwitchTo(targetID string, manual bool) error {
 		return nil // 已经是当前线路
 	}
 
+	targetState := target.GetState()
+	if targetState == StateFailed {
+		c.routesMu.Unlock()
+		return fmt.Errorf("目标线路处于 FAILED 状态，尚未恢复 (线路: %s)", targetID)
+	}
+	if targetState == StateRecovering {
+		c.routesMu.Unlock()
+		return fmt.Errorf("目标线路处于 RECOVERING 状态，尚未完成恢复 (线路: %s)", targetID)
+	}
+	if targetState != StateActive && !CanTransitionTo(targetState, StateActive) {
+		c.routesMu.Unlock()
+		return fmt.Errorf("目标线路无法切换为 ACTIVE: 当前状态为 %s (线路: %s)", targetState, targetID)
+	}
+
 	now := time.Now()
 	// 紧急故障转移判定：若当前没有活跃线路、或当前线路非 Active 状态、或连续失败达到阈值，允许立即切换无视冷却
 	isEmergency := current == nil || current.GetState() != StateActive || current.GetMetrics().FailureCount >= c.cfg.FailureThreshold
@@ -296,17 +349,22 @@ func (c *RouteController) SwitchTo(targetID string, manual bool) error {
 		}
 	}
 
-	// 状态机流转：确保系统有且仅有唯一一个 ACTIVE 线路
-	if current != nil {
+	// 状态机流转：
+	// 1. 必须先确认目标线路成功进入 ACTIVE；若 TransitionTo 返回 error，绝对不继续修改 c.activeRoute 或降级 current
+	if targetState != StateActive {
+		if err := target.TransitionTo(StateActive); err != nil {
+			c.routesMu.Unlock()
+			return fmt.Errorf("目标线路无法切换为 ACTIVE: %w", err)
+		}
+	}
+
+	// 2. 确保系统有且仅有唯一一个 ACTIVE 线路：将旧活跃线路安全降级为 STANDBY
+	if current != nil && current != target {
 		currState := current.GetState()
 		if currState == StateActive || currState == StateDegraded {
 			_ = current.TransitionTo(StateStandby)
 		}
 		// 若当前原线路已是 FAILING 或 FAILED，保持其故障状态，绝不转为 STANDBY
-	}
-
-	if target.GetState() != StateActive {
-		_ = target.TransitionTo(StateActive)
 	}
 
 	c.activeRoute = target
@@ -321,7 +379,7 @@ func (c *RouteController) SwitchTo(targetID string, manual bool) error {
 	log.Printf("[RouteController] 🚀 线路已切换为: [%s] %s (%s:%d), 综合分: %.1f",
 		target.ID, target.Name, target.Address, target.Port, target.GetScore())
 
-	// 回调 GoPass Engine 触发真正的 UpdateUpstream (新连接使用新线路，旧连接不断)
+	// 锁外回调 GoPass Engine 触发真正的 UpdateUpstream (新连接使用新线路，旧连接不断)
 	if c.onSwitch != nil {
 		c.onSwitch(target)
 	}

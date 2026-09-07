@@ -639,3 +639,235 @@ func TestActiveStandby_StrictExclusivity(t *testing.T) {
 		t.Fatalf("active route should be r2, got %s", c.GetCurrentRoute().ID)
 	}
 }
+
+func TestSwitchTo_RejectFailedRoute(t *testing.T) {
+	cfg := config.AutomaticRouteConfig{
+		Enabled:     true,
+		HistoryFile: "none",
+		Routes: []config.RouteConfig{
+			{ID: "r1", Name: "R1", Address: "127.0.0.1", Port: 1001, Protocol: "socks5"},
+			{ID: "r2", Name: "R2", Address: "127.0.0.1", Port: 1002, Protocol: "socks5"},
+		},
+	}
+	c := NewRouteController(cfg, nil)
+	_ = c.Start()
+	defer c.Stop()
+
+	// 1. 初始 r1 为 ACTIVE
+	if c.GetCurrentRoute().ID != "r1" {
+		t.Fatalf("expected r1 to be active, got %v", c.GetCurrentRoute())
+	}
+
+	// 2. 将 r2 推入 FAILED
+	c.routesMu.RLock()
+	r2 := c.routes["r2"]
+	c.routesMu.RUnlock()
+
+	_ = r2.TransitionTo(StateDegraded)
+	_ = r2.TransitionTo(StateFailing)
+	if err := r2.TransitionTo(StateFailed); err != nil {
+		t.Fatalf("failed to push r2 to FAILED: %v", err)
+	}
+	if r2.GetState() != StateFailed {
+		t.Fatalf("r2 state should be FAILED, got %s", r2.GetState())
+	}
+
+	// 3. 初始验证系统活跃唯一性
+	if err := c.CheckActiveConsistency(); err != nil {
+		t.Fatalf("active consistency failed: %v", err)
+	}
+
+	// 4. 调用 SwitchTo("r2", true)
+	err := c.SwitchTo("r2", true)
+
+	// 5. 必须返回 error
+	if err == nil {
+		t.Fatal("expected SwitchTo failed route to return error, got nil")
+	}
+
+	// 6. 当前 activeRoute 仍然是 r1
+	curr := c.GetCurrentRoute()
+	if curr == nil || curr.ID != "r1" {
+		t.Fatalf("current active route should still be r1, got %v", curr)
+	}
+	if curr.State != StateActive {
+		t.Fatalf("r1 state should remain ACTIVE, got %s", curr.State)
+	}
+
+	// 7. r2 仍然是 FAILED
+	if r2.GetState() != StateFailed {
+		t.Fatalf("r2 state should remain FAILED, got %s", r2.GetState())
+	}
+
+	// 8. 系统中 ACTIVE 数量仍然严格为 1
+	if err := c.CheckActiveConsistency(); err != nil {
+		t.Fatalf("active consistency failed after rejected switch: %v", err)
+	}
+}
+
+func TestSwitchTo_RejectRecoveringRoute(t *testing.T) {
+	cfg := config.AutomaticRouteConfig{
+		Enabled:     true,
+		HistoryFile: "none",
+		Routes: []config.RouteConfig{
+			{ID: "r1", Name: "R1", Address: "127.0.0.1", Port: 1001, Protocol: "socks5"},
+			{ID: "r2", Name: "R2", Address: "127.0.0.1", Port: 1002, Protocol: "socks5"},
+		},
+	}
+	c := NewRouteController(cfg, nil)
+	_ = c.Start()
+	defer c.Stop()
+
+	// r2 推入 RECOVERING
+	c.routesMu.RLock()
+	r2 := c.routes["r2"]
+	c.routesMu.RUnlock()
+
+	_ = r2.TransitionTo(StateDegraded)
+	_ = r2.TransitionTo(StateFailing)
+	_ = r2.TransitionTo(StateFailed)
+	if err := r2.TransitionTo(StateRecovering); err != nil {
+		t.Fatalf("failed to push r2 to RECOVERING: %v", err)
+	}
+
+	// 试图将 RECOVERING 线路切换为 ACTIVE -> 必须拒绝并返回 error
+	err := c.SwitchTo("r2", true)
+	if err == nil {
+		t.Fatal("expected SwitchTo recovering route to return error, got nil")
+	}
+
+	// activeRoute 仍然是 r1，且 r2 依然是 RECOVERING
+	if c.GetCurrentRoute().ID != "r1" {
+		t.Fatalf("current active route should remain r1, got %s", c.GetCurrentRoute().ID)
+	}
+	if r2.GetState() != StateRecovering {
+		t.Fatalf("r2 state should remain RECOVERING, got %s", r2.GetState())
+	}
+	if err := c.CheckActiveConsistency(); err != nil {
+		t.Fatalf("active consistency failed: %v", err)
+	}
+}
+
+func TestActive_StrictUniqueness_AllScenarios(t *testing.T) {
+	cfg := config.AutomaticRouteConfig{
+		Enabled:           true,
+		HistoryFile:       "none",
+		MinimumStableTime: -1,
+		SwitchCooldown:    -1,
+		FailureThreshold:  3,
+		Routes: []config.RouteConfig{
+			{ID: "r1", Name: "R1", Address: "127.0.0.1", Port: 1001, Protocol: "socks5"},
+			{ID: "r2", Name: "R2", Address: "127.0.0.1", Port: 1002, Protocol: "socks5"},
+		},
+	}
+
+	c := NewRouteController(cfg, nil)
+
+	// Scenario 1: 未 Start 之前
+	if err := c.CheckActiveConsistency(); err != nil {
+		t.Fatalf("consistency failed before start: %v", err)
+	}
+
+	// Scenario 2: Start 初始化
+	if err := c.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	defer c.Stop()
+
+	if err := c.CheckActiveConsistency(); err != nil {
+		t.Fatalf("consistency failed after start: %v", err)
+	}
+	if c.GetCurrentRoute().ID != "r1" || c.GetCurrentRoute().State != StateActive {
+		t.Fatalf("expected r1 ACTIVE after start, got %v", c.GetCurrentRoute())
+	}
+
+	// Scenario 3: 正常 SwitchTo
+	if err := c.SwitchTo("r2", true); err != nil {
+		t.Fatalf("normal SwitchTo r2 failed: %v", err)
+	}
+	if err := c.CheckActiveConsistency(); err != nil {
+		t.Fatalf("consistency failed after normal switch: %v", err)
+	}
+	if c.GetCurrentRoute().ID != "r2" || c.GetCurrentRoute().State != StateActive {
+		t.Fatalf("expected r2 ACTIVE, got %v", c.GetCurrentRoute())
+	}
+
+	// Scenario 4: 非法 SwitchTo (目标处于 FAILED 或 RECOVERING)
+	c.routesMu.RLock()
+	r1 := c.routes["r1"]
+	c.routesMu.RUnlock()
+	_ = r1.TransitionTo(StateDegraded)
+	_ = r1.TransitionTo(StateFailing)
+	_ = r1.TransitionTo(StateFailed)
+
+	if err := c.SwitchTo("r1", true); err == nil {
+		t.Fatal("expected SwitchTo FAILED route to fail")
+	}
+	if err := c.CheckActiveConsistency(); err != nil {
+		t.Fatalf("consistency failed after illegal switch to FAILED: %v", err)
+	}
+
+	_ = r1.TransitionTo(StateRecovering)
+	if err := c.SwitchTo("r1", true); err == nil {
+		t.Fatal("expected SwitchTo RECOVERING route to fail")
+	}
+	if err := c.CheckActiveConsistency(); err != nil {
+		t.Fatalf("consistency failed after illegal switch to RECOVERING: %v", err)
+	}
+
+	// Scenario 5: RegisterRoute
+	r3 := NewRoute("r3", "R3", "127.0.0.1", 1003, "socks5", "goway")
+	if err := c.RegisterRoute(r3); err != nil {
+		t.Fatalf("RegisterRoute r3 failed: %v", err)
+	}
+	if err := c.CheckActiveConsistency(); err != nil {
+		t.Fatalf("consistency failed after RegisterRoute: %v", err)
+	}
+
+	// 注册时恶意带有 StateActive 属性 -> 必须被平稳规范化为 READY
+	r4 := NewRoute("r4", "R4", "127.0.0.1", 1004, "socks5", "goway")
+	r4.State = StateActive
+	if err := c.RegisterRoute(r4); err != nil {
+		t.Fatalf("RegisterRoute r4 failed: %v", err)
+	}
+	if err := c.CheckActiveConsistency(); err != nil {
+		t.Fatalf("consistency failed after RegisterRoute with fake active: %v", err)
+	}
+
+	// Scenario 6: UnregisterRoute
+	if err := c.UnregisterRoute("r3"); err != nil {
+		t.Fatalf("UnregisterRoute r3 failed: %v", err)
+	}
+	if err := c.CheckActiveConsistency(); err != nil {
+		t.Fatalf("consistency failed after UnregisterRoute: %v", err)
+	}
+
+	// 严禁反注册当前 ACTIVE 线路
+	if err := c.UnregisterRoute(c.GetCurrentRoute().ID); err == nil {
+		t.Fatal("expected error on unregistering ACTIVE route")
+	}
+	if err := c.CheckActiveConsistency(); err != nil {
+		t.Fatalf("consistency failed after rejected unregister: %v", err)
+	}
+
+	// Scenario 7: Emergency Failover
+	// 将 r1 恢复至 READY
+	_ = r1.TransitionTo(StateReady)
+	bTrue := true
+	bFalse := false
+	c.ReportMetrics([]RouteMetricReport{
+		{ID: "r1", HandshakeSuccess: &bTrue, DownloadSpeed: 20 * 1024 * 1024, RTT: 20},
+	})
+	// 当前 active (r2) 连续失败 3 次触发紧急转移
+	for i := 0; i < 3; i++ {
+		c.ReportMetrics([]RouteMetricReport{
+			{ID: "r2", HandshakeSuccess: &bFalse},
+		})
+	}
+	if c.GetCurrentRoute().ID != "r1" {
+		t.Fatalf("expected emergency failover to r1, got %s", c.GetCurrentRoute().ID)
+	}
+	if err := c.CheckActiveConsistency(); err != nil {
+		t.Fatalf("consistency failed after emergency failover: %v", err)
+	}
+}

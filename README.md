@@ -32,8 +32,8 @@ A high-performance, Zero-Copy transparent proxy for Windows, tailored for extrem
 ## 📥 Installation & Usage / 安装与使用
 
 1. **Download / 下载**  
-   Compile from source using `go build` or download the ultra-slim release executable `gopass_1.6.2.exe`.  
-   根据源码自行编译，或直接下载极限瘦身的成品执行文件 `gopass_1.6.2.exe`。
+   Compile from source using `go build` or download the ultra-slim release executable `gopass_1.6.3.exe`.  
+   根据源码自行编译，或直接下载极限瘦身的成品执行文件 `gopass_1.6.3.exe`。
 
 2. **Run as Administrator / 提权运行**  
    ⚠️ GoPass **MUST** be run as Administrator because the `WinDivert` driver requires high-level system permissions.  
@@ -371,3 +371,17 @@ However, for heavy **pure web-browsing** (e.g., watching 4K YouTube videos), mod
 GoPass 是为那些**不懂代理、无法设置代理**的系统底层软件而生的透明兜底方案。对于纯血多媒体冲浪（例如主力浏览器），直接给浏览器本身加装诸如 `ZeroOmega` 等代理调度插件，永远能获得极致纯天然的纯粹极速体验（免去了网卡中转跳传的极微小损耗）。
 
 **最佳姿势：** 浏览器内装扩展火力全开，其余万物交给 GoPass 暴力拖出火海！🚀
+ 
+---
+
+## 📝 Release Notes
+
+### v1.6.3
+- **SwitchTo 状态机合法性硬约束**：
+  - 彻底修复非法状态（`FAILED`、`RECOVERING` 等）激活漏洞；在修改活跃线路（`c.activeRoute`）前，严格验证目标线路状态机流转合法性，TransitionTo 失败时绝对不修改当前活跃线路与旧线路状态。
+  - 手动与自动切换对 `FAILED` / `RECOVERING` 线路返回清晰错误，杜绝状态越级。
+- **Start 初始化锁粒度优化**：
+  - 首选线路激活过程将 `onSwitch` 回调移出 `routesMu` 锁保护区，避免未来上游热更新扩展引发锁嵌套或死锁风险。
+- **ACTIVE 线路唯一性全面加固**：
+  - 动态注册（`RegisterRoute`）主动规避伪造状态，杜绝出现双 ACTIVE 线路。
+  - 新增 `CheckActiveConsistency` 全局断言，覆盖正常切换、非法切换、紧急转移、动态注册、注销及初始化场景。
