@@ -21,6 +21,132 @@ var bufferPool = sync.Pool{
 	},
 }
 
+const (
+	TargetTypeOriginalIP     = "original_ip"
+	TargetTypeFakeIPResolved = "fake_ip_resolved_ip"
+	TargetTypeSNIFallback    = "sni_fallback"
+)
+
+// ResolveProxyTargetResult 包含代理目标解析结果
+type ResolveProxyTargetResult struct {
+	Target     string // 目标地址 (host:port)
+	TargetType string // original_ip | fake_ip_resolved_ip | sni_fallback
+	Reason     string // 仅在 fallback 或异常时说明原因
+}
+
+// isFakeIP 判断是否属于 Fake-IP / Benchmark 保留地址段 (198.18.0.0/15)
+func isFakeIP(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	v4 := ip.To4()
+	if v4 == nil {
+		return false
+	}
+	return v4[0] == 198 && (v4[1] == 18 || v4[1] == 19)
+}
+
+// isValidRealIP 判断是否为有效的非 Fake 真实目标 IP
+func isValidRealIP(ip net.IP) bool {
+	if ip == nil || ip.IsUnspecified() {
+		return false
+	}
+	if isFakeIP(ip) {
+		return false
+	}
+	return true
+}
+
+// ResolveProxyTarget 统一解析代理上游 TCP 连接目标：
+// 解耦 TCP 连接目标 IP 与 TLS SNI，确保优先连接真实 OrigDstIP。
+//
+// 规则：
+// 1. 真实 OrigDstIP：targetAddr = OrigDstIP:OrigDstPort (type: original_ip)
+// 2. FakeIP：若 fakeResolver 能恢复，targetAddr = 真实 IP:OrigDstPort (type: fake_ip_resolved_ip)
+// 3. 无法恢复或无效 IP：targetAddr = SNI:OrigDstPort (type: sni_fallback)，产生明确警告日志
+func ResolveProxyTarget(origDstIP net.IP, origDstPort uint16, sni string, isHTTPS bool, domain string, fakeResolver func(net.IP) (net.IP, bool)) ResolveProxyTargetResult {
+	portStr := strconv.Itoa(int(origDstPort))
+	effectiveDomain := sni
+	if effectiveDomain == "" {
+		effectiveDomain = domain
+	}
+
+	var res ResolveProxyTargetResult
+
+	if isValidRealIP(origDstIP) {
+		// 第一优先级：真实 OrigDstIP
+		res = ResolveProxyTargetResult{
+			Target:     net.JoinHostPort(origDstIP.String(), portStr),
+			TargetType: TargetTypeOriginalIP,
+		}
+	} else if isFakeIP(origDstIP) {
+		// 第二优先级：Fake IP 尝试恢复真实目标 IP
+		if fakeResolver != nil {
+			if realIP, ok := fakeResolver(origDstIP); ok && isValidRealIP(realIP) {
+				res = ResolveProxyTargetResult{
+					Target:     net.JoinHostPort(realIP.String(), portStr),
+					TargetType: TargetTypeFakeIPResolved,
+				}
+			}
+		}
+
+		// 第三优先级：Fake IP 无法恢复真实 IP，回退到 SNI:port
+		if res.Target == "" {
+			if effectiveDomain != "" {
+				res = ResolveProxyTargetResult{
+					Target:     net.JoinHostPort(effectiveDomain, portStr),
+					TargetType: TargetTypeSNIFallback,
+					Reason:     "fake_ip_mapping_unavailable",
+				}
+			} else {
+				res = ResolveProxyTargetResult{
+					Target:     net.JoinHostPort(origDstIP.String(), portStr),
+					TargetType: TargetTypeFakeIPResolved,
+					Reason:     "fake_ip_no_domain_available",
+				}
+			}
+		}
+	} else {
+		// IP 未指定或为空
+		if effectiveDomain != "" {
+			res = ResolveProxyTargetResult{
+				Target:     net.JoinHostPort(effectiveDomain, portStr),
+				TargetType: TargetTypeSNIFallback,
+				Reason:     "unspecified_ip",
+			}
+		} else {
+			ipStr := "0.0.0.0"
+			if origDstIP != nil {
+				ipStr = origDstIP.String()
+			}
+			res = ResolveProxyTargetResult{
+				Target:     net.JoinHostPort(ipStr, portStr),
+				TargetType: TargetTypeOriginalIP,
+			}
+		}
+	}
+
+	// 统一输出 debug/warn 日志（每个新连接仅记录一次）
+	logProxyTarget(origDstIP, origDstPort, effectiveDomain, res)
+	return res
+}
+
+func logProxyTarget(origDstIP net.IP, origDstPort uint16, sni string, res ResolveProxyTargetResult) {
+	origDst := "nil"
+	if origDstIP != nil {
+		origDst = net.JoinHostPort(origDstIP.String(), strconv.Itoa(int(origDstPort)))
+	}
+	sniStr := sni
+	if sniStr == "" {
+		sniStr = "<none>"
+	}
+	if res.Reason != "" {
+		log.Printf("[PROXY TARGET] orig_dst=%s sni=%s target=%s type=%s reason=%s", origDst, sniStr, res.Target, res.TargetType, res.Reason)
+	} else {
+		log.Printf("[PROXY TARGET] orig_dst=%s sni=%s target=%s type=%s", origDst, sniStr, res.Target, res.TargetType)
+	}
+}
+
 // readTLSClientHello reads and extracts the SNI from a TLS ClientHello.
 // CRITICAL FIX: Returns ALL bytes read from conn (readBuf) regardless of whether SNI extraction
 // succeeded or failed. This guarantees ZERO DATA LOSS so the TLS handshake is never corrupted.
@@ -76,6 +202,9 @@ type TProxy struct {
 
 	// 分流路由器（绝对分流）；为 nil 时保持原有「全部走代理」行为
 	router *Router
+
+	// Fake-IP 真实 IP 恢复解析器（可空）
+	fakeIPResolver func(net.IP) (net.IP, bool)
 
 	// [v1.2.1] Hot-reloadable performance settings
 	bufferSize      int
@@ -133,6 +262,15 @@ func (tp *TProxy) UpdatePerformance(perf config.PerformanceConfig) {
 func (tp *TProxy) UpdateUpstream(pType, pAddr string) {
 	tp.upstream.Update(pType, pAddr)
 	log.Printf("[TProxy] 上游代理已热切换为: %s -> %s", pType, pAddr)
+}
+
+// SetFakeIPResolver 设置 Fake-IP 真实 IP 恢复解析器
+func (tp *TProxy) SetFakeIPResolver(fn func(net.IP) (net.IP, bool)) {
+	tp.fakeIPResolver = fn
+}
+
+func (tp *TProxy) resolveProxyTarget(origDstIP net.IP, origDstPort uint16, sni string, isHTTPS bool, domain string) ResolveProxyTargetResult {
+	return ResolveProxyTarget(origDstIP, origDstPort, sni, isHTTPS, domain, tp.fakeIPResolver)
 }
 
 // Accept 开始接受连接（阻塞）
@@ -198,20 +336,19 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 	}
 	defer tp.tracker.Delete(srcIP, srcPort)
 
-	targetAddr := fmt.Sprintf("%s:%d", target.OrigDstIP.String(), target.OrigDstPort)
+	origDstAddr := net.JoinHostPort(target.OrigDstIP.String(), strconv.Itoa(int(target.OrigDstPort)))
 
 	// SNI Sniffing (Zero-Data-Loss)
 	var peekBuf []byte
 	isHTTPS := target.OrigDstPort == 443
 	domain := ""
+	var sni string
 
 	if isHTTPS {
-		var sni string
 		var err error
 		peekBuf, sni, err = readTLSClientHello(conn)
 		if err == nil && sni != "" {
 			domain = sni
-			targetAddr = fmt.Sprintf("%s:%d", sni, target.OrigDstPort)
 		}
 	}
 
@@ -222,33 +359,27 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 	reason := "whitelist"
 	var remote net.Conn
 	var err error
+	var targetAddr string
 
 	if tp.router != nil && tp.router.SplitEnabled() {
 		res := tp.router.Decide(domain, target.OrigDstIP, target.ProcessName)
 		reason = res.Reason
 		if res.Decision == DecisionDirect {
 			// 直连：直接拨原始目标 IP（不做本地 DNS 解析，避免任何 DNS 泄漏）
-			directAddr := net.JoinHostPort(target.OrigDstIP.String(), strconv.Itoa(int(target.OrigDstPort)))
-			remote, err = net.DialTimeout("tcp", directAddr, 10*time.Second)
+			targetAddr = origDstAddr
+			remote, err = net.DialTimeout("tcp", targetAddr, 10*time.Second)
 			policy = "DIRECT"
-			targetAddr = directAddr
 		} else {
-			// 代理：SNI 域名交给上游代理做远端 DNS 解析（零本地 DNS 泄漏）
-			if domain != "" {
-				targetAddr = fmt.Sprintf("%s:%d", domain, target.OrigDstPort)
-			} else {
-				targetAddr = fmt.Sprintf("%s:%d", target.OrigDstIP.String(), target.OrigDstPort)
-			}
+			// 代理：解耦 TCP 连接目标与 TLS SNI，上游 SOCKS5 优先连接真实 OrigDstIP
+			resolved := tp.resolveProxyTarget(target.OrigDstIP, target.OrigDstPort, sni, isHTTPS, domain)
+			targetAddr = resolved.Target
 			remote, err = tp.upstream.Dial("tcp", targetAddr)
 		}
 	} else {
 		// 原有逻辑：一律走上游代理
-		dialer, errDialer := tp.upstream.Dialer()
-		if errDialer != nil {
-			log.Printf("[TProxy] 代理 Dialer 创建失败: %v", errDialer)
-			return
-		}
-		remote, err = dialer.Dial("tcp", targetAddr)
+		resolved := tp.resolveProxyTarget(target.OrigDstIP, target.OrigDstPort, sni, isHTTPS, domain)
+		targetAddr = resolved.Target
+		remote, err = tp.upstream.Dial("tcp", targetAddr)
 	}
 
 	// 关键：任何失败都直接关闭连接，绝不回退直连（零中国痕迹的核心保障）
@@ -294,6 +425,7 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 			"process": target.ProcessName,
 			"target":  targetAddr,
 			"host":    target.OrigDstIP.String(),
+			"domain":  domain,
 			"policy":  policy,
 			"reason":  reason,
 		}

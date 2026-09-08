@@ -72,23 +72,21 @@ jobs:
           $env:GOOS = "windows"
           $env:GOARCH = "amd64"
           go build -ldflags="-s -w" -o gopass.exe ./cmd/gopass
-          Copy-Item gopass.exe gopass_1.6.4.exe
-          Get-Item gopass.exe, gopass_1.6.4.exe | Select-Object Name, Length
+          Copy-Item gopass.exe gopass_1.6.5.exe
+          Get-Item gopass.exe, gopass_1.6.5.exe | Select-Object Name, Length
 
       - name: GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: GoPass v1.6.4
+          name: GoPass v1.6.5
           body: |
-            GoPass v1.6.4
-            - Increased default TProxy forwarding buffer to 256 KB
-            - Hardened runtime buffer bounds
-            - Preserved Windows TCP Auto-Tuning behavior
-            - Reduced unnecessary hot-path allocation risk
-            - Added TProxy buffer performance benchmarks
-            - Added performance configuration tests
+            GoPass v1.6.5
+            - Decoupled upstream TCP proxy target from TLS SNI (preserve original destination IP for proxied HTTPS)
+            - Prioritized real OrigDstIP over SNI in SOCKS5/HTTP upstream forwarding to maximize Cloudflare Speed Test (CFST) throughput
+            - Added unified ResolveProxyTarget with Fake-IP mapping and graceful SNI fallback
+            - Added comprehensive unit tests and end-to-end regression tests for proxy target resolution
           files: |
             gopass.exe
-            gopass_1.6.4.exe
+            gopass_1.6.5.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

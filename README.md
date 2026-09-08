@@ -32,8 +32,8 @@ A high-performance, Zero-Copy transparent proxy for Windows, tailored for extrem
 ## 📥 Installation & Usage / 安装与使用
 
 1. **Download / 下载**  
-   Compile from source using `go build` or download the ultra-slim release executable `gopass_1.6.4.exe`.  
-   根据源码自行编译，或直接下载极限瘦身的成品执行文件 `gopass_1.6.4.exe`。
+   Compile from source using `go build` or download the ultra-slim release executable `gopass_1.6.5.exe`.  
+   根据源码自行编译，或直接下载极限瘦身的成品执行文件 `gopass_1.6.5.exe`。
 
 2. **Run as Administrator / 提权运行**  
    ⚠️ GoPass **MUST** be run as Administrator because the `WinDivert` driver requires high-level system permissions.  
@@ -376,6 +376,13 @@ GoPass 是为那些**不懂代理、无法设置代理**的系统底层软件而
 
 ## 📝 Release Notes
  
+### v1.6.5
+- **解耦上游代理目标 IP 与 TLS SNI (Decouple Upstream Proxy Target from TLS SNI)**：
+  - 修复 HTTPS 代理转发中 SNI 覆盖原始真实 IP 问题：上游 SOCKS5/HTTP 优先直连 WinDivert 捕获到的 `OrigDstIP:OrigDstPort`，彻底解决 Cloudflare 优选 IP (CFST) 被绕过导致吞吐下降问题。
+  - TLS ClientHello 保持原样直传，SNI 仅用于 Router 分流、域名规则与日志。
+  - 增加统一 `ResolveProxyTarget` 目标解析器与明确连接调试日志。
+  - 完善 Fake-IP 安全恢复机制与 fallback 告警。
+
 ### v1.6.4
 - **TProxy 转发吞吐优化 (Forwarding Throughput Optimization)**：
   - Increased default TProxy forwarding buffer to 256 KB (`256 * 1024` bytes).

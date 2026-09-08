@@ -41,9 +41,22 @@ func (u *UpstreamDialer) Current() (string, string) {
 	return u.pType, u.pAddr
 }
 
+// SetDialer 设置自定义 dialer（用于单元测试 mock 或扩展包装）。
+func (u *UpstreamDialer) SetDialer(d proxy.Dialer) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.cached = d
+	u.cachedKey = "custom"
+}
+
 // Dialer 返回（缓存的）proxy.Dialer。
 func (u *UpstreamDialer) Dialer() (proxy.Dialer, error) {
 	u.mu.RLock()
+	if u.cachedKey == "custom" && u.cached != nil {
+		d := u.cached
+		u.mu.RUnlock()
+		return d, nil
+	}
 	key := u.pType + "://" + u.pAddr
 	if u.cached != nil && u.cachedKey == key {
 		d := u.cached
@@ -55,6 +68,9 @@ func (u *UpstreamDialer) Dialer() (proxy.Dialer, error) {
 
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	if u.cachedKey == "custom" && u.cached != nil {
+		return u.cached, nil
+	}
 	if u.cached != nil && u.cachedKey == key {
 		return u.cached, nil
 	}
