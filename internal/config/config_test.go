@@ -140,3 +140,49 @@ func TestAutomaticRouteConfigDefaults(t *testing.T) {
 	}
 }
 
+func TestPerformanceConfigDefaultsAndBounds(t *testing.T) {
+	c := DefaultConfig()
+	if c.Performance.BufferSize != 262144 {
+		t.Errorf("默认 BufferSize = %d, want 262144", c.Performance.BufferSize)
+	}
+	if !c.Performance.TCPNoDelay {
+		t.Error("默认 TCPNoDelay 应为 true")
+	}
+	if c.Performance.TCPSocketBuffer != 0 {
+		t.Errorf("默认 TCPSocketBuffer = %d, want 0", c.Performance.TCPSocketBuffer)
+	}
+	if !c.Performance.BidirectWait {
+		t.Error("默认 BidirectWait 应为 true")
+	}
+	if !c.Performance.TCPKeepAlive {
+		t.Error("默认 TCPKeepAlive 应为 true")
+	}
+	if c.Performance.KeepAlivePeriod != 15 {
+		t.Errorf("默认 KeepAlivePeriod = %d, want 15", c.Performance.KeepAlivePeriod)
+	}
+	if c.Performance.TCPLinger != -1 {
+		t.Errorf("默认 TCPLinger = %d, want -1", c.Performance.TCPLinger)
+	}
+
+	tests := []struct {
+		input    int
+		expected int
+		desc     string
+	}{
+		{4095, 4096, "4095 进入运行时后被限制到 4096"},
+		{4096, 4096, "4096 合法"},
+		{262144, 262144, "262144 合法"},
+		{1048576, 1048576, "1048576 合法"},
+		{1048577, 1048576, "1048577 被限制到 1048576"},
+		{0, 4096, "0 被限制到 4096"},
+		{-1, 4096, "负数被限制到 4096"},
+	}
+
+	for _, tt := range tests {
+		got := ClampBufferSize(tt.input)
+		if got != tt.expected {
+			t.Errorf("ClampBufferSize(%d) [%s] = %d, want %d", tt.input, tt.desc, got, tt.expected)
+		}
+	}
+}
+

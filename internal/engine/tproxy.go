@@ -177,8 +177,8 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 	tp.perfMu.RUnlock()
 
 	// Clamp buffer size to [4096, 1MB]
-	if bufSize <= 0 {
-		bufSize = 32768
+	if bufSize < 4096 {
+		bufSize = 4096
 	}
 	if bufSize > 1024*1024 {
 		bufSize = 1024 * 1024
@@ -311,6 +311,9 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 	go func() {
 		buf := bufferPool.Get().([]byte)
 		defer bufferPool.Put(buf)
+		if cap(buf) < bufSize {
+			buf = make([]byte, bufSize)
+		}
 		copyBuf := buf[:bufSize]
 		for {
 			n, err := remote.Read(copyBuf)
@@ -338,6 +341,9 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 	go func() {
 		buf := bufferPool.Get().([]byte)
 		defer bufferPool.Put(buf)
+		if cap(buf) < bufSize {
+			buf = make([]byte, bufSize)
+		}
 		copyBuf := buf[:bufSize]
 		for {
 			n, err := conn.Read(copyBuf)

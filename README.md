@@ -32,8 +32,8 @@ A high-performance, Zero-Copy transparent proxy for Windows, tailored for extrem
 ## 📥 Installation & Usage / 安装与使用
 
 1. **Download / 下载**  
-   Compile from source using `go build` or download the ultra-slim release executable `gopass_1.6.3.exe`.  
-   根据源码自行编译，或直接下载极限瘦身的成品执行文件 `gopass_1.6.3.exe`。
+   Compile from source using `go build` or download the ultra-slim release executable `gopass_1.6.4.exe`.  
+   根据源码自行编译，或直接下载极限瘦身的成品执行文件 `gopass_1.6.4.exe`。
 
 2. **Run as Administrator / 提权运行**  
    ⚠️ GoPass **MUST** be run as Administrator because the `WinDivert` driver requires high-level system permissions.  
@@ -375,6 +375,15 @@ GoPass 是为那些**不懂代理、无法设置代理**的系统底层软件而
 ---
 
 ## 📝 Release Notes
+ 
+### v1.6.4
+- **TProxy 转发吞吐优化 (Forwarding Throughput Optimization)**：
+  - Increased default TProxy forwarding buffer to 256 KB (`256 * 1024` bytes).
+  - Hardened runtime buffer bounds (`[4096, 1048576]`).
+  - Preserved Windows TCP Auto-Tuning behavior (`TCPSocketBuffer = 0`).
+  - Reduced unnecessary hot-path allocation risk with safe buffer capacity validation.
+  - Added TProxy buffer performance benchmarks.
+  - Added performance configuration tests.
 
 ### v1.6.3
 - **SwitchTo 状态机合法性硬约束**：

@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: test
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '>=1.24'
+          check-latest: true
+
+      - name: Ensure MinGW GCC in PATH (for race detector / cgo)
+        shell: powershell
+        run: |
+          if (Test-Path "C:\msys64\mingw64\bin\gcc.exe") {
+            Write-Host "Adding MSYS2 MinGW64 to PATH"
+            "C:\msys64\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          } elseif (Test-Path "C:\Strawberry\c\bin\gcc.exe") {
+            Write-Host "Adding Strawberry GCC to PATH"
+            "C:\Strawberry\c\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          }
+          if (Get-Command gcc -ErrorAction SilentlyContinue) {
+            Write-Host "gcc found: $(gcc --version | Select-Object -First 1)"
+          }
+
+      - name: Run Tests
+        shell: powershell
+        run: go test -v ./...
+
+      - name: Run Race Tests
+        shell: powershell
+        run: |
+          if (Test-Path "C:\msys64\mingw64\bin") { $env:PATH = "C:\msys64\mingw64\bin;" + $env:PATH }
+          elseif (Test-Path "C:\Strawberry\c\bin") { $env:PATH = "C:\Strawberry\c\bin;" + $env:PATH }
+          $env:CGO_ENABLED = "1"
+          go test -race -v ./...
+
+      - name: Run Vet
+        shell: powershell
+        run: go vet ./...
+
+  build-and-release:
+    name: build-and-release
+    needs: test
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '>=1.24'
+          check-latest: true
+
+      - name: Build Windows x64 Executable
+        shell: powershell
+        run: |
+          $env:GOOS = "windows"
+          $env:GOARCH = "amd64"
+          go build -ldflags="-s -w" -o gopass.exe ./cmd/gopass
+          Copy-Item gopass.exe gopass_1.6.4.exe
+          Get-Item gopass.exe, gopass_1.6.4.exe | Select-Object Name, Length
+
+      - name: GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: GoPass v1.6.4
+          body: |
+            GoPass v1.6.4
+            - Increased default TProxy forwarding buffer to 256 KB
+            - Hardened runtime buffer bounds
+            - Preserved Windows TCP Auto-Tuning behavior
+            - Reduced unnecessary hot-path allocation risk
+            - Added TProxy buffer performance benchmarks
+            - Added performance configuration tests
+          files: |
+            gopass.exe
+            gopass_1.6.4.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

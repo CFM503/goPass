@@ -144,6 +144,17 @@ type PerformanceConfig struct {
 	TCPLinger       int  `json:"tcp_linger"`
 }
 
+// ClampBufferSize 限制缓冲区大小在合法运行时范围 [4096, 1048576] (4KB ~ 1MB)
+func ClampBufferSize(size int) int {
+	if size < 4096 {
+		return 4096
+	}
+	if size > 1024*1024 {
+		return 1024 * 1024
+	}
+	return size
+}
+
 type APIConfig struct {
 	ListenAddr        string `json:"listen_addr"`
 	WSRefreshInterval int    `json:"ws_refresh_interval"`
@@ -348,7 +359,7 @@ func DefaultConfig() *Config {
 			},
 		},
 		Performance: PerformanceConfig{
-			BufferSize:      32768,
+			BufferSize:      256 * 1024,
 			TCPNoDelay:      true,
 			TCPSocketBuffer: 0,
 			BidirectWait:    true,
