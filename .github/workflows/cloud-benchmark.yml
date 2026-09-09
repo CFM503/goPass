@@ -43,10 +43,7 @@ jobs:
       - name: Direct baseline against external test files
         shell: powershell
         run: |
-          $urls = @(
-            'https://ash-speed.hetzner.com/100MB.bin',
-            'https://proof.ovh.net/files/100Mb.dat'
-          )
+          $urls = @('https://ash-speed.hetzner.com/100MB.bin','https://proof.ovh.net/files/100Mb.dat')
           $ok = $false
           foreach ($url in $urls) {
             Write-Host "DIRECT URL=$url"
@@ -58,10 +55,7 @@ jobs:
       - name: SOCKS5 baseline against external test files
         shell: powershell
         run: |
-          $urls = @(
-            'https://ash-speed.hetzner.com/100MB.bin',
-            'https://proof.ovh.net/files/100Mb.dat'
-          )
+          $urls = @('https://ash-speed.hetzner.com/100MB.bin','https://proof.ovh.net/files/100Mb.dat')
           $ok = $false
           foreach ($url in $urls) {
             Write-Host "SOCKS5 URL=$url"
@@ -74,16 +68,7 @@ jobs:
         shell: powershell
         run: |
           @'
-          {
-            "api": { "listen_addr": "127.0.0.1:18080", "ws_refresh_interval": 5, "ui_conn_limit": 10, "show_direct_conns": false, "direct_conns_limit": 20 },
-            "dns": { "listen_addr": "127.0.0.1:15353", "fake_ip_range": "198.18.0.0/16" },
-            "routing": { "mode": "whitelist", "rules": [{ "type": "process", "payload": "curl.exe", "outbound": "proxy" }] },
-            "outbounds": { "servers": [{ "tag": "proxy", "type": "socks5", "address": "127.0.0.1", "port": 19080 }] },
-            "performance": { "buffer_size": 1048576, "tcp_no_delay": true, "tcp_socket_buffer": 0, "bidirect_wait": true, "tcp_keep_alive": true, "keep_alive_period": 15, "tcp_linger": -1 },
-            "system": { "tproxy_port": 17893, "process_cache_refresh_interval": 2, "netstat_cache_refresh_interval": 1, "direct_conns_ttl": 5, "conn_track_gc_interval": 10, "conn_track_ttl": 60 },
-            "split": { "enabled": false, "mode": "both", "geo_priority": true, "cn_direct": true, "foreign_proxy": true, "block_ipv6": true, "rule_files": { "geosite": "", "geoip": "" }, "custom_direct": [], "custom_proxy": [], "dns_relay_port": 15300, "system_dns": "", "dot_server": "1.1.1.1:853", "dot_sni": "cloudflare-dns.com", "block_foreign_udp": true, "auto_update_hours": 0 },
-            "automatic_route": { "enabled": false, "routes": [] }
-          }
+          {"api":{"listen_addr":"127.0.0.1:18080","ws_refresh_interval":5,"ui_conn_limit":10,"show_direct_conns":false,"direct_conns_limit":20},"dns":{"listen_addr":"127.0.0.1:15353","fake_ip_range":"198.18.0.0/16"},"routing":{"mode":"whitelist","rules":[{"type":"process","payload":"curl.exe","outbound":"proxy"}]},"outbounds":{"servers":[{"tag":"proxy","type":"socks5","address":"127.0.0.1","port":19080}]},"performance":{"buffer_size":1048576,"tcp_no_delay":true,"tcp_socket_buffer":0,"bidirect_wait":true,"tcp_keep_alive":true,"keep_alive_period":15,"tcp_linger":-1},"system":{"tproxy_port":17893,"process_cache_refresh_interval":2,"netstat_cache_refresh_interval":1,"direct_conns_ttl":5,"conn_track_gc_interval":10,"conn_track_ttl":60},"split":{"enabled":false,"mode":"both","geo_priority":true,"cn_direct":true,"foreign_proxy":true,"block_ipv6":true,"rule_files":{"geosite":"","geoip":""},"custom_direct":[],"custom_proxy":[],"dns_relay_port":15300,"system_dns":"","dot_server":"1.1.1.1:853","dot_sni":"cloudflare-dns.com","block_foreign_udp":true,"auto_update_hours":0},"automatic_route":{"enabled":false,"routes":[]}}
           '@ | Set-Content -Path cloudbench_gopass.json -Encoding UTF8
           Get-Content cloudbench_gopass.json
 
@@ -99,10 +84,7 @@ jobs:
       - name: GoPass transparent benchmark
         shell: powershell
         run: |
-          $urls = @(
-            'https://ash-speed.hetzner.com/100MB.bin',
-            'https://proof.ovh.net/files/100Mb.dat'
-          )
+          $urls = @('https://ash-speed.hetzner.com/100MB.bin','https://proof.ovh.net/files/100Mb.dat')
           $ok = $false
           foreach ($url in $urls) {
             Write-Host "GOPASS URL=$url"
