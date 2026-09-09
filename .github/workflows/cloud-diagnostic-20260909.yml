@@ -1,0 +1,87 @@
+name: GoPass Cloud Diagnostic 20260909
+
+on:
+  push:
+    branches:
+      - tmp-cloud-diagnostic-20260909
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Show environment
+        run: |
+          go version
+          uname -a
+          nproc
+          free -h
+
+      - name: Run Go tests
+        run: go test ./...
+
+      - name: Inspect existing cloud benchmarks
+        run: |
+          echo '--- cloud-benchmark.yml ---'
+          sed -n '1,240p' .github/workflows/cloud-benchmark.yml || true
+          echo '--- benchmark tools ---'
+          find tools -maxdepth 1 -type f -print | sort
+
+      - name: GoPass local relay microbenchmark
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cat > /tmp/relaybench.go <<'EOF'
+          package main
+          import (
+            "fmt"
+            "io"
+            "net"
+            "sync"
+            "time"
+          )
+          func main() {
+            const total = int64(512 * 1024 * 1024)
+            ln, err := net.Listen("tcp", "127.0.0.1:0")
+            if err != nil { panic(err) }
+            defer ln.Close()
+            addr := ln.Addr().String()
+            var wg sync.WaitGroup
+            wg.Add(1)
+            go func() {
+              defer wg.Done()
+              c, err := ln.Accept(); if err != nil { panic(err) }
+              defer c.Close()
+              buf := make([]byte, 256*1024)
+              n, err := io.CopyBuffer(io.Discard, c, buf)
+              if err != nil { panic(err) }
+              fmt.Printf("server bytes=%d\n", n)
+            }()
+            c, err := net.Dial("tcp", addr); if err != nil { panic(err) }
+            defer c.Close()
+            buf := make([]byte, 256*1024)
+            for i := range buf { buf[i] = byte(i) }
+            start := time.Now()
+            var sent int64
+            for sent < total {
+              left := total - sent
+              p := buf
+              if int64(len(p)) > left { p = p[:left] }
+              n, err := c.Write(p); if err != nil { panic(err) }
+              sent += int64(n)
+            }
+            _ = c.Close()
+            wg.Wait()
+            sec := time.Since(start).Seconds()
+            fmt.Printf("local_tcp_256k_mbps=%.1f seconds=%.3f bytes=%d\n", float64(total)*8/sec/1e6, sec, total)
+          }
+          EOF
+          go run /tmp/relaybench.go
