@@ -57,20 +57,20 @@ jobs:
           $env:GOOS = "windows"
           $env:GOARCH = "amd64"
           go build -ldflags="-s -w" -o gopass.exe ./cmd/gopass
-          Copy-Item gopass.exe gopass_1.6.6.exe
-          Get-Item gopass.exe, gopass_1.6.6.exe | Select-Object Name, Length
+          Copy-Item gopass.exe gopass_1.6.7.exe
+          Get-Item gopass.exe, gopass_1.6.7.exe | Select-Object Name, Length
       - name: GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: GoPass v1.6.6
+          name: GoPass v1.6.7
           body: |
-            GoPass v1.6.6
-            - Added Windows cloud throughput benchmark workflow.
-            - Added a self-contained local SOCKS5 benchmark helper for controlled proxy-path testing.
-            - Added direct-vs-SOCKS5 Cloudflare download measurements and buffer/copy benchmarks.
-            - Bumped application version to v1.6.6.
+            GoPass v1.6.7
+            - Added a real Windows cloud benchmark that starts GoPass and measures transparent proxy throughput.
+            - Added direct, raw SOCKS5, and GoPass-through-SOCKS5 comparison paths using external test files.
+            - Captures GoPass startup/runtime diagnostics and internal buffer/copy benchmarks.
+            - Bumped application version to v1.6.7.
           files: |
             gopass.exe
-            gopass_1.6.6.exe
+            gopass_1.6.7.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
