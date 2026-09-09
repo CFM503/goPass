@@ -13,56 +13,134 @@ on:
 jobs:
   benchmark:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.24.x'
+
       - name: Go test
         shell: powershell
         run: go test ./...
-      - name: Build benchmark SOCKS5
+
+      - name: Build benchmark components
         shell: powershell
-        run: go build -o cloudbench_socks.exe ./tools/cloudbench_socks.go
-      - name: Start local SOCKS5 proxy
+        run: |
+          go build -o cloudbench_socks.exe ./tools/cloudbench_socks.go
+          go build -o gopass.exe ./cmd/gopass
+
+      - name: Start upstream SOCKS5
         shell: powershell
         run: |
           Start-Process -FilePath "$PWD\cloudbench_socks.exe" -ArgumentList "127.0.0.1:19080" -WindowStyle Hidden
           Start-Sleep -Seconds 2
           Get-NetTCPConnection -LocalPort 19080 -ErrorAction Stop | Format-Table -AutoSize
-      - name: Direct Cloudflare download baseline
+
+      - name: Direct baseline against external test files
         shell: powershell
         run: |
-          $sizes = @(104857600, 268435456)
-          foreach ($size in $sizes) {
-            $url = "https://speed.cloudflare.com/__down?bytes=$size"
-            Write-Host "DIRECT bytes=$size"
-            curl.exe -L --retry 2 --connect-timeout 15 --max-time 60 -o NUL -w "http=%{http_code} bytes=%{size_download} time=%{time_total} speed_bps=%{speed_download}`n" $url
+          $urls = @(
+            'https://ash-speed.hetzner.com/100MB.bin',
+            'https://proof.ovh.net/files/100Mb.dat'
+          )
+          $ok = $false
+          foreach ($url in $urls) {
+            Write-Host "DIRECT URL=$url"
+            curl.exe -L --retry 1 --connect-timeout 15 --max-time 90 -o NUL -w "url=%{url_effective} http=%{http_code} bytes=%{size_download} time=%{time_total} speed_bps=%{speed_download}`n" $url
+            if ($LASTEXITCODE -eq 0) { $ok = $true; break }
           }
-      - name: SOCKS5 Cloudflare download baseline
+          if (-not $ok) { throw 'All direct external test files failed' }
+
+      - name: SOCKS5 baseline against external test files
         shell: powershell
         run: |
-          $sizes = @(104857600, 268435456)
-          foreach ($size in $sizes) {
-            $url = "https://speed.cloudflare.com/__down?bytes=$size"
-            Write-Host "SOCKS5 bytes=$size"
-            curl.exe -L --socks5-hostname 127.0.0.1:19080 --retry 2 --connect-timeout 15 --max-time 60 -o NUL -w "http=%{http_code} bytes=%{size_download} time=%{time_total} speed_bps=%{speed_download}`n" $url
+          $urls = @(
+            'https://ash-speed.hetzner.com/100MB.bin',
+            'https://proof.ovh.net/files/100Mb.dat'
+          )
+          $ok = $false
+          foreach ($url in $urls) {
+            Write-Host "SOCKS5 URL=$url"
+            curl.exe -L --socks5-hostname 127.0.0.1:19080 --retry 1 --connect-timeout 15 --max-time 90 -o NUL -w "url=%{url_effective} http=%{http_code} bytes=%{size_download} time=%{time_total} speed_bps=%{speed_download}`n" $url
+            if ($LASTEXITCODE -eq 0) { $ok = $true; break }
           }
+          if (-not $ok) { throw 'All SOCKS5 external test files failed' }
+
+      - name: Create GoPass benchmark config
+        shell: powershell
+        run: |
+          @'
+          {
+            "api": { "listen_addr": "127.0.0.1:18080", "ws_refresh_interval": 5, "ui_conn_limit": 10, "show_direct_conns": false, "direct_conns_limit": 20 },
+            "dns": { "listen_addr": "127.0.0.1:15353", "fake_ip_range": "198.18.0.0/16" },
+            "routing": { "mode": "whitelist", "rules": [{ "type": "process", "payload": "curl.exe", "outbound": "proxy" }] },
+            "outbounds": { "servers": [{ "tag": "proxy", "type": "socks5", "address": "127.0.0.1", "port": 19080 }] },
+            "performance": { "buffer_size": 1048576, "tcp_no_delay": true, "tcp_socket_buffer": 0, "bidirect_wait": true, "tcp_keep_alive": true, "keep_alive_period": 15, "tcp_linger": -1 },
+            "system": { "tproxy_port": 17893, "process_cache_refresh_interval": 2, "netstat_cache_refresh_interval": 1, "direct_conns_ttl": 5, "conn_track_gc_interval": 10, "conn_track_ttl": 60 },
+            "split": { "enabled": false, "mode": "both", "geo_priority": true, "cn_direct": true, "foreign_proxy": true, "block_ipv6": true, "rule_files": { "geosite": "", "geoip": "" }, "custom_direct": [], "custom_proxy": [], "dns_relay_port": 15300, "system_dns": "", "dot_server": "1.1.1.1:853", "dot_sni": "cloudflare-dns.com", "block_foreign_udp": true, "auto_update_hours": 0 },
+            "automatic_route": { "enabled": false, "routes": [] }
+          }
+          '@ | Set-Content -Path cloudbench_gopass.json -Encoding UTF8
+          Get-Content cloudbench_gopass.json
+
+      - name: Start GoPass transparent proxy
+        shell: powershell
+        run: |
+          Start-Process -FilePath "$PWD\gopass.exe" -ArgumentList '-config','cloudbench_gopass.json' -WindowStyle Hidden -RedirectStandardOutput "$PWD\gopass_stdout.log" -RedirectStandardError "$PWD\gopass_stderr.log"
+          Start-Sleep -Seconds 5
+          Get-Process gopass -ErrorAction Stop | Select-Object Id,CPU,WorkingSet,Path
+          Get-NetTCPConnection -LocalPort 17893 -ErrorAction SilentlyContinue | Format-Table -AutoSize
+          Get-Content gopass_stderr.log -ErrorAction SilentlyContinue
+
+      - name: GoPass transparent benchmark
+        shell: powershell
+        run: |
+          $urls = @(
+            'https://ash-speed.hetzner.com/100MB.bin',
+            'https://proof.ovh.net/files/100Mb.dat'
+          )
+          $ok = $false
+          foreach ($url in $urls) {
+            Write-Host "GOPASS URL=$url"
+            curl.exe -L --noproxy '*' --retry 1 --connect-timeout 15 --max-time 90 -o NUL -w "url=%{url_effective} http=%{http_code} bytes=%{size_download} time=%{time_total} speed_bps=%{speed_download}`n" $url
+            if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+          }
+          if (-not $ok) { throw 'All GoPass external test files failed' }
+
+      - name: Capture GoPass diagnostics
+        if: always()
+        shell: powershell
+        run: |
+          Write-Host '=== GoPass stdout ==='
+          Get-Content gopass_stdout.log -ErrorAction SilentlyContinue
+          Write-Host '=== GoPass stderr ==='
+          Get-Content gopass_stderr.log -ErrorAction SilentlyContinue
+          Write-Host '=== Processes ==='
+          Get-Process gopass -ErrorAction SilentlyContinue | Select-Object Id,CPU,WorkingSet,Path
+
       - name: Go copy benchmarks
         shell: powershell
         run: |
           go test ./internal/engine -run '^$' -bench 'Buffer|Copy|Proxy' -benchmem -benchtime=3s 2>&1 | Tee-Object cloudbench_go.txt
+
       - name: System snapshot
         shell: powershell
         run: |
-          Write-Host "GoPass benchmark version: v1.6.6"
+          Write-Host "GoPass benchmark version: v1.6.7"
           Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,TotalVisibleMemorySize,FreePhysicalMemory
           Get-CimInstance Win32_Processor | Select-Object Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed
+
       - name: Upload benchmark results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: gopass-cloud-benchmark-v1.6.6-${{ github.sha }}
-          path: cloudbench_go.txt
+          name: gopass-cloud-benchmark-v1.6.7-${{ github.sha }}
+          path: |
+            cloudbench_go.txt
+            cloudbench_gopass.json
+            gopass_stdout.log
+            gopass_stderr.log
