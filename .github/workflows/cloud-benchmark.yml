@@ -1,0 +1,76 @@
+name: Cloud Performance Benchmark
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'tools/cloudbench_socks.go'
+      - 'internal/engine/**'
+      - 'internal/config/**'
+      - 'cmd/gopass/**'
+      - '.github/workflows/cloud-benchmark.yml'
+
+jobs:
+  benchmark:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+
+      - name: Go test
+        shell: powershell
+        run: go test ./...
+
+      - name: Build benchmark SOCKS5
+        shell: powershell
+        run: go build -o cloudbench_socks.exe ./tools/cloudbench_socks.go
+
+      - name: Start local SOCKS5 proxy
+        shell: powershell
+        run: |
+          Start-Process -FilePath "$PWD\cloudbench_socks.exe" -ArgumentList "127.0.0.1:19080" -WindowStyle Hidden
+          Start-Sleep -Seconds 2
+          Get-NetTCPConnection -LocalPort 19080 -ErrorAction Stop | Format-Table -AutoSize
+
+      - name: Direct Cloudflare download baseline
+        shell: powershell
+        run: |
+          $sizes = @(104857600, 268435456)
+          foreach ($size in $sizes) {
+            $url = "https://speed.cloudflare.com/__down?bytes=$size"
+            Write-Host "DIRECT bytes=$size"
+            curl.exe -L --retry 2 --connect-timeout 15 --max-time 60 -o NUL -w "http=%{http_code} bytes=%{size_download} time=%{time_total} speed_bps=%{speed_download}`n" $url
+          }
+
+      - name: SOCKS5 Cloudflare download baseline
+        shell: powershell
+        run: |
+          $sizes = @(104857600, 268435456)
+          foreach ($size in $sizes) {
+            $url = "https://speed.cloudflare.com/__down?bytes=$size"
+            Write-Host "SOCKS5 bytes=$size"
+            curl.exe -L --socks5-hostname 127.0.0.1:19080 --retry 2 --connect-timeout 15 --max-time 60 -o NUL -w "http=%{http_code} bytes=%{size_download} time=%{time_total} speed_bps=%{speed_download}`n" $url
+          }
+
+      - name: Buffer-size Go benchmark
+        shell: powershell
+        run: |
+          go test ./internal/engine -run '^$' -bench 'Buffer|Copy|Proxy' -benchmem -benchtime=3s 2>&1 | Tee-Object cloudbench_go.txt
+
+      - name: System snapshot
+        shell: powershell
+        run: |
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,TotalVisibleMemorySize,FreePhysicalMemory
+          Get-CimInstance Win32_Processor | Select-Object Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: gopass-cloud-benchmark-${{ github.sha }}
+          path: cloudbench_go.txt
