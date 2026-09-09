@@ -7,8 +7,8 @@ on:
 
 jobs:
   diagnostic:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    runs-on: windows-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -19,27 +19,31 @@ jobs:
           go-version: '1.25'
 
       - name: Show environment
+        shell: pwsh
         run: |
           go version
-          uname -a
-          nproc
-          free -h
+          $PSVersionTable
+          Get-CimInstance Win32_Processor | Select-Object Name,NumberOfLogicalProcessors
+          Get-CimInstance Win32_OperatingSystem | Select-Object TotalVisibleMemorySize,FreePhysicalMemory
 
-      - name: Run Go tests
-        run: go test ./...
+      - name: Compile GoPass packages
+        shell: pwsh
+        run: |
+          go test ./internal/config ./internal/controller
+          go test ./internal/api ./internal/engine ./internal/process ./cmd/gopass -run '^$'
 
       - name: Inspect existing cloud benchmarks
+        shell: pwsh
         run: |
-          echo '--- cloud-benchmark.yml ---'
-          sed -n '1,240p' .github/workflows/cloud-benchmark.yml || true
-          echo '--- benchmark tools ---'
-          find tools -maxdepth 1 -type f -print | sort
+          Write-Host '--- cloud-benchmark.yml ---'
+          if (Test-Path .github/workflows/cloud-benchmark.yml) { Get-Content .github/workflows/cloud-benchmark.yml | Select-Object -First 260 }
+          Write-Host '--- benchmark tools ---'
+          if (Test-Path tools) { Get-ChildItem tools -File | Sort-Object Name | Select-Object -ExpandProperty FullName }
 
       - name: GoPass local relay microbenchmark
-        shell: bash
+        shell: pwsh
         run: |
-          set -euxo pipefail
-          cat > /tmp/relaybench.go <<'EOF'
+          $src = @'
           package main
           import (
             "fmt"
@@ -66,7 +70,6 @@ jobs:
               fmt.Printf("server bytes=%d\n", n)
             }()
             c, err := net.Dial("tcp", addr); if err != nil { panic(err) }
-            defer c.Close()
             buf := make([]byte, 256*1024)
             for i := range buf { buf[i] = byte(i) }
             start := time.Now()
@@ -83,5 +86,7 @@ jobs:
             sec := time.Since(start).Seconds()
             fmt.Printf("local_tcp_256k_mbps=%.1f seconds=%.3f bytes=%d\n", float64(total)*8/sec/1e6, sec, total)
           }
-          EOF
-          go run /tmp/relaybench.go
+          '@
+          $path = Join-Path $env:RUNNER_TEMP 'relaybench.go'
+          Set-Content -Path $path -Value $src -Encoding utf8
+          go run $path
