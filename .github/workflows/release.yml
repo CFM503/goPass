@@ -13,31 +13,19 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: '>=1.24'
           check-latest: true
-
       - name: Ensure MinGW GCC in PATH (for race detector / cgo)
         shell: powershell
         run: |
-          if (Test-Path "C:\msys64\mingw64\bin\gcc.exe") {
-            Write-Host "Adding MSYS2 MinGW64 to PATH"
-            "C:\msys64\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          } elseif (Test-Path "C:\Strawberry\c\bin\gcc.exe") {
-            Write-Host "Adding Strawberry GCC to PATH"
-            "C:\Strawberry\c\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          }
-          if (Get-Command gcc -ErrorAction SilentlyContinue) {
-            Write-Host "gcc found: $(gcc --version | Select-Object -First 1)"
-          }
-
+          if (Test-Path "C:\msys64\mingw64\bin\gcc.exe") { "C:\msys64\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append }
+          elseif (Test-Path "C:\Strawberry\c\bin\gcc.exe") { "C:\Strawberry\c\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append }
       - name: Run Tests
         shell: powershell
         run: go test -v ./...
-
       - name: Run Race Tests
         shell: powershell
         run: |
@@ -45,7 +33,6 @@ jobs:
           elseif (Test-Path "C:\Strawberry\c\bin") { $env:PATH = "C:\Strawberry\c\bin;" + $env:PATH }
           $env:CGO_ENABLED = "1"
           go test -race -v ./...
-
       - name: Run Vet
         shell: powershell
         run: go vet ./...
@@ -59,34 +46,31 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: '>=1.24'
           check-latest: true
-
       - name: Build Windows x64 Executable
         shell: powershell
         run: |
           $env:GOOS = "windows"
           $env:GOARCH = "amd64"
           go build -ldflags="-s -w" -o gopass.exe ./cmd/gopass
-          Copy-Item gopass.exe gopass_1.6.5.exe
-          Get-Item gopass.exe, gopass_1.6.5.exe | Select-Object Name, Length
-
+          Copy-Item gopass.exe gopass_1.6.6.exe
+          Get-Item gopass.exe, gopass_1.6.6.exe | Select-Object Name, Length
       - name: GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: GoPass v1.6.5
+          name: GoPass v1.6.6
           body: |
-            GoPass v1.6.5
-            - Decoupled upstream TCP proxy target from TLS SNI (preserve original destination IP for proxied HTTPS)
-            - Prioritized real OrigDstIP over SNI in SOCKS5/HTTP upstream forwarding to maximize Cloudflare Speed Test (CFST) throughput
-            - Added unified ResolveProxyTarget with Fake-IP mapping and graceful SNI fallback
-            - Added comprehensive unit tests and end-to-end regression tests for proxy target resolution
+            GoPass v1.6.6
+            - Added Windows cloud throughput benchmark workflow.
+            - Added a self-contained local SOCKS5 benchmark helper for controlled proxy-path testing.
+            - Added direct-vs-SOCKS5 Cloudflare download measurements and buffer/copy benchmarks.
+            - Bumped application version to v1.6.6.
           files: |
             gopass.exe
-            gopass_1.6.5.exe
+            gopass_1.6.6.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
