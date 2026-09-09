@@ -8,7 +8,7 @@ on:
 jobs:
   diagnostic:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -18,21 +18,7 @@ jobs:
         with:
           go-version: '1.25'
 
-      - name: Show environment
-        shell: pwsh
-        run: |
-          go version
-          $PSVersionTable
-          Get-CimInstance Win32_Processor | Select-Object Name,NumberOfLogicalProcessors
-          Get-CimInstance Win32_OperatingSystem | Select-Object TotalVisibleMemorySize,FreePhysicalMemory
-
-      - name: Compile GoPass packages
-        shell: pwsh
-        run: |
-          go test ./internal/config ./internal/controller
-          go test ./internal/api ./internal/engine ./internal/process ./cmd/gopass -run '^$'
-
-      - name: Build local SOCKS5 test proxy
+      - name: Build test SOCKS5 proxy
         shell: pwsh
         run: |
           go build -o cloudbench_socks.exe ./tools/cloudbench_socks.go
@@ -40,64 +26,25 @@ jobs:
           Start-Sleep -Seconds 2
           Get-NetTCPConnection -LocalPort 19080 -ErrorAction Stop | Format-Table -AutoSize
 
-      - name: A/B direct vs SOCKS5 - run 1
+      - name: A direct run 1
         shell: pwsh
         run: |
-          curl.exe -L --retry 1 --connect-timeout 15 --max-time 90 -o NUL -w "A_DIRECT_1 bytes=%{size_download} time=%{time_total} speed_bps=%{speed_download}`n" https://ash-speed.hetzner.com/100MB.bin
-          curl.exe -L --socks5-hostname 127.0.0.1:19080 --retry 1 --connect-timeout 15 --max-time 90 -o NUL -w "B_SOCKS5_1 bytes=%{size_download} time=%{time_total} speed_bps=%{speed_download}`n" https://ash-speed.hetzner.com/100MB.bin
+          curl.exe -L --retry 1 --connect-timeout 15 --max-time 90 -o NUL -w "DIRECT_1 bytes=%{size_download} time=%{time_total} speed_bps=%{speed_download}`n" https://ash-speed.hetzner.com/100MB.bin
 
-      - name: A/B direct vs SOCKS5 - run 2
+      - name: B SOCKS5 run 1
         shell: pwsh
         run: |
-          curl.exe -L --retry 1 --connect-timeout 15 --max-time 90 -o NUL -w "A_DIRECT_2 bytes=%{size_download} time=%{time_total} speed_bps=%{speed_download}`n" https://ash-speed.hetzner.com/100MB.bin
-          curl.exe -L --socks5-hostname 127.0.0.1:19080 --retry 1 --connect-timeout 15 --max-time 90 -o NUL -w "B_SOCKS5_2 bytes=%{size_download} time=%{time_total} speed_bps=%{speed_download}`n" https://ash-speed.hetzner.com/100MB.bin
+          curl.exe -L --socks5-hostname 127.0.0.1:19080 --retry 1 --connect-timeout 15 --max-time 90 -o NUL -w "SOCKS5_1 bytes=%{size_download} time=%{time_total} speed_bps=%{speed_download}`n" https://ash-speed.hetzner.com/100MB.bin
 
-      - name: A/B GoPass UpstreamDialer vs raw SOCKS5 - run 1
+      - name: A direct run 2
         shell: pwsh
         run: |
-          $src = @'
-package main
+          curl.exe -L --retry 1 --connect-timeout 15 --max-time 90 -o NUL -w "DIRECT_2 bytes=%{size_download} time=%{time_total} speed_bps=%{speed_download}`n" https://ash-speed.hetzner.com/100MB.bin
 
-import (
-    "context"
-    "fmt"
-    "io"
-    "net"
-    "net/http"
-    "os"
-    "time"
-    "github.com/CFM503/goPass/internal/engine"
-)
-
-func main() {
-    url := "https://ash-speed.hetzner.com/100MB.bin"
-    if len(os.Args) > 1 { url = os.Args[1] }
-    d := engine.NewUpstreamDialer("socks5", "127.0.0.1:19080")
-    tr := &http.Transport{
-        DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) { return d.Dial(network, addr) },
-        DisableCompression: true,
-    }
-    client := &http.Client{Transport: tr}
-    start := time.Now()
-    resp, err := client.Get(url)
-    if err != nil { panic(err) }
-    defer resp.Body.Close()
-    n, err := io.Copy(io.Discard, resp.Body)
-    if err != nil { panic(err) }
-    sec := time.Since(start).Seconds()
-    fmt.Printf("A_GOPASS_DIALER_1 bytes=%d time=%.3f speed_mbps=%.1f status=%s\n", n, sec, float64(n)*8/sec/1e6, resp.Status)
-}
-'@
-          $path = Join-Path $env:RUNNER_TEMP 'upstreambench.go'
-          Set-Content -Path $path -Value $src -Encoding utf8
-          go run $path
-          curl.exe -L --socks5-hostname 127.0.0.1:19080 --retry 1 --connect-timeout 15 --max-time 90 -o NUL -w "B_RAW_SOCKS5_1 bytes=%{size_download} time=%{time_total} speed_bps=%{speed_download}`n" https://ash-speed.hetzner.com/100MB.bin
-
-      - name: A/B GoPass UpstreamDialer vs raw SOCKS5 - run 2
+      - name: B SOCKS5 run 2
         shell: pwsh
         run: |
-          go run $env:RUNNER_TEMP\upstreambench.go
-          curl.exe -L --socks5-hostname 127.0.0.1:19080 --retry 1 --connect-timeout 15 --max-time 90 -o NUL -w "B_RAW_SOCKS5_2 bytes=%{size_download} time=%{time_total} speed_bps=%{speed_download}`n" https://ash-speed.hetzner.com/100MB.bin
+          curl.exe -L --socks5-hostname 127.0.0.1:19080 --retry 1 --connect-timeout 15 --max-time 90 -o NUL -w "SOCKS5_2 bytes=%{size_download} time=%{time_total} speed_bps=%{speed_download}`n" https://ash-speed.hetzner.com/100MB.bin
 
       - name: Local TCP baseline
         shell: pwsh
@@ -106,25 +53,22 @@ func main() {
 package main
 import ("fmt"; "io"; "net"; "sync"; "time")
 func main() {
-    const total = int64(512 * 1024 * 1024)
-    ln, err := net.Listen("tcp", "127.0.0.1:0"); if err != nil { panic(err) }; defer ln.Close()
-    var wg sync.WaitGroup; wg.Add(1)
-    go func() { defer wg.Done(); c, err := ln.Accept(); if err != nil { panic(err) }; defer c.Close(); n, err := io.CopyBuffer(io.Discard, c, make([]byte, 256*1024)); if err != nil { panic(err) }; fmt.Printf("server bytes=%d\n", n) }()
-    c, err := net.Dial("tcp", ln.Addr().String()); if err != nil { panic(err) }
-    buf := make([]byte, 256*1024); start := time.Now(); var sent int64
-    for sent < total { left := total-sent; p := buf; if int64(len(p)) > left { p=p[:left] }; n, err := c.Write(p); if err != nil { panic(err) }; sent += int64(n) }
-    _ = c.Close(); wg.Wait(); sec := time.Since(start).Seconds()
-    fmt.Printf("local_tcp_256k_mbps=%.1f seconds=%.3f bytes=%d\n", float64(total)*8/sec/1e6, sec, total)
+ const total=int64(256*1024*1024)
+ ln,_:=net.Listen("tcp","127.0.0.1:0"); defer ln.Close()
+ var wg sync.WaitGroup; wg.Add(1)
+ go func(){defer wg.Done(); c,_:=ln.Accept(); defer c.Close(); n,_:=io.CopyBuffer(io.Discard,c,make([]byte,256*1024)); fmt.Println("server_bytes",n)}()
+ c,_:=net.Dial("tcp",ln.Addr().String()); buf:=make([]byte,256*1024); start:=time.Now(); var sent int64
+ for sent<total { p:=buf; left:=total-sent; if int64(len(p))>left {p=p[:left]}; n,_:=c.Write(p); sent+=int64(n) }
+ c.Close(); wg.Wait(); sec:=time.Since(start).Seconds(); fmt.Printf("LOCAL_TCP_256K speed_mbps=%.1f seconds=%.3f bytes=%d\n",float64(total)*8/sec/1e6,sec,total)
 }
 '@
-          $path = Join-Path $env:RUNNER_TEMP 'relaybench.go'
+          $path=Join-Path $env:RUNNER_TEMP 'relaybench.go'
           Set-Content -Path $path -Value $src -Encoding utf8
           go run $path
 
-      - name: Capture diagnostics
+      - name: Diagnostics
         if: always()
         shell: pwsh
         run: |
           Get-Process cloudbench_socks -ErrorAction SilentlyContinue | Select-Object Id,CPU,WorkingSet,Path
           Get-NetTCPConnection -LocalPort 19080 -ErrorAction SilentlyContinue | Format-Table -AutoSize
-          Write-Host "A/B diagnostic rerun: repeated direct, raw SOCKS5, and GoPass UpstreamDialer comparisons"
