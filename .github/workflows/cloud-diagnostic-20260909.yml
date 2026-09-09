@@ -32,15 +32,61 @@ jobs:
           go test ./internal/config ./internal/controller
           go test ./internal/api ./internal/engine ./internal/process ./cmd/gopass -run '^$'
 
-      - name: Inspect existing cloud benchmarks
+      - name: Build local SOCKS5 test proxy
         shell: pwsh
         run: |
-          Write-Host '--- cloud-benchmark.yml ---'
-          if (Test-Path .github/workflows/cloud-benchmark.yml) { Get-Content .github/workflows/cloud-benchmark.yml | Select-Object -First 260 }
-          Write-Host '--- benchmark tools ---'
-          if (Test-Path tools) { Get-ChildItem tools -File | Sort-Object Name | Select-Object -ExpandProperty FullName }
+          go build -o cloudbench_socks.exe ./tools/cloudbench_socks.go
+          Start-Process -FilePath "$PWD\cloudbench_socks.exe" -ArgumentList "127.0.0.1:19080" -WindowStyle Hidden
+          Start-Sleep -Seconds 2
+          Get-NetTCPConnection -LocalPort 19080 -ErrorAction Stop | Format-Table -AutoSize
 
-      - name: GoPass local relay microbenchmark
+      - name: Direct external throughput
+        shell: pwsh
+        run: |
+          curl.exe -L --retry 1 --connect-timeout 15 --max-time 90 -o NUL -w "direct bytes=%{size_download} time=%{time_total} speed_bps=%{speed_download}`n" https://ash-speed.hetzner.com/100MB.bin
+          if ($LASTEXITCODE -ne 0) { throw 'direct download failed' }
+
+      - name: Raw SOCKS5 external throughput
+        shell: pwsh
+        run: |
+          curl.exe -L --socks5-hostname 127.0.0.1:19080 --retry 1 --connect-timeout 15 --max-time 90 -o NUL -w "socks5 bytes=%{size_download} time=%{time_total} speed_bps=%{speed_download}`n" https://ash-speed.hetzner.com/100MB.bin
+          if ($LASTEXITCODE -ne 0) { throw 'socks5 download failed' }
+
+      - name: GoPass UpstreamDialer throughput
+        shell: pwsh
+        run: |
+          $src = @'
+          package main
+          import (
+            "fmt"
+            "io"
+            "net/http"
+            "os"
+            "time"
+            "github.com/CFM503/goPass/internal/engine"
+          )
+          func main() {
+            url := "https://ash-speed.hetzner.com/100MB.bin"
+            if len(os.Args) > 1 { url = os.Args[1] }
+            d := engine.NewUpstreamDialer("socks5", "127.0.0.1:19080")
+            tr := &http.Transport{DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) { return d.Dial(network, addr) }, DisableCompression: true}
+            client := &http.Client{Transport: tr}
+            start := time.Now()
+            resp, err := client.Get(url)
+            if err != nil { panic(err) }
+            n, err := io.Copy(io.Discard, resp.Body)
+            resp.Body.Close()
+            if err != nil { panic(err) }
+            sec := time.Since(start).Seconds()
+            fmt.Printf("upstream_dialer bytes=%d time=%.3f speed_mbps=%.1f status=%s\n", n, sec, float64(n)*8/sec/1e6, resp.Status)
+          }
+          '@
+          $src = $src -replace '"fmt"', '"fmt"`n            "context"`n            "net"'
+          $path = Join-Path $env:RUNNER_TEMP 'upstreambench.go'
+          Set-Content -Path $path -Value $src -Encoding utf8
+          go run $path
+
+      - name: Local TCP baseline
         shell: pwsh
         run: |
           $src = @'
@@ -64,14 +110,12 @@ jobs:
               defer wg.Done()
               c, err := ln.Accept(); if err != nil { panic(err) }
               defer c.Close()
-              buf := make([]byte, 256*1024)
-              n, err := io.CopyBuffer(io.Discard, c, buf)
+              n, err := io.CopyBuffer(io.Discard, c, make([]byte, 256*1024))
               if err != nil { panic(err) }
               fmt.Printf("server bytes=%d\n", n)
             }()
             c, err := net.Dial("tcp", addr); if err != nil { panic(err) }
             buf := make([]byte, 256*1024)
-            for i := range buf { buf[i] = byte(i) }
             start := time.Now()
             var sent int64
             for sent < total {
@@ -81,8 +125,7 @@ jobs:
               n, err := c.Write(p); if err != nil { panic(err) }
               sent += int64(n)
             }
-            _ = c.Close()
-            wg.Wait()
+            _ = c.Close(); wg.Wait()
             sec := time.Since(start).Seconds()
             fmt.Printf("local_tcp_256k_mbps=%.1f seconds=%.3f bytes=%d\n", float64(total)*8/sec/1e6, sec, total)
           }
@@ -90,3 +133,10 @@ jobs:
           $path = Join-Path $env:RUNNER_TEMP 'relaybench.go'
           Set-Content -Path $path -Value $src -Encoding utf8
           go run $path
+
+      - name: Capture diagnostics
+        if: always()
+        shell: pwsh
+        run: |
+          Get-Process cloudbench_socks -ErrorAction SilentlyContinue | Select-Object Id,CPU,WorkingSet,Path
+          Get-NetTCPConnection -LocalPort 19080 -ErrorAction SilentlyContinue | Format-Table -AutoSize
