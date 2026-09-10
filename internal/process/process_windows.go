@@ -35,6 +35,7 @@ type Resolver struct {
 	mu       sync.RWMutex
 	flows    map[Flow]Entry
 	pidCache map[uint32]pidCacheEntry
+	fallbackMu sync.Mutex
 }
 
 var (
@@ -137,6 +138,30 @@ func (r *Resolver) Lookup(flow Flow) (Entry, bool) {
 	e, ok := r.flows[flow]
 	r.mu.RUnlock()
 	return e, ok
+}
+
+// LookupWithRefresh restores the v1.6.3 startup/new-connection fallback.
+// The background refresh normally makes Lookup a cheap O(1) operation, but a
+// brand-new TCP connection can arrive at WinDivert before the next TCP-table
+// refresh. On a cache miss, perform one serialized live table refresh and retry.
+// This keeps the hot path fast while preventing the first packet of a new
+// browser connection from being incorrectly passed direct.
+func (r *Resolver) LookupWithRefresh(flow Flow) (Entry, bool) {
+	if e, ok := r.Lookup(flow); ok {
+		return e, true
+	}
+
+	r.fallbackMu.Lock()
+	defer r.fallbackMu.Unlock()
+
+	// Another packet may have refreshed the table while we waited.
+	if e, ok := r.Lookup(flow); ok {
+		return e, true
+	}
+	if err := r.Refresh(); err != nil {
+		return Entry{}, false
+	}
+	return r.Lookup(flow)
 }
 
 func (r *Resolver) Snapshot() []Entry {
