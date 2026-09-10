@@ -6,14 +6,14 @@ import (
 )
 
 type Config struct {
-	API         APIConfig         `json:"api"`
-	DNS         DNSConfig         `json:"dns"`
-	Routing     RoutingConfig     `json:"routing"`
-	Outbounds   OutboundConfig    `json:"outbounds"`
-	Performance PerformanceConfig `json:"performance"`
-	System      SystemConfig         `json:"system"`
-	Split       SplitConfig          `json:"split"`
-	AutomaticRoute AutomaticRouteConfig `json:"automatic_route"`
+	API             APIConfig             `json:"api"`
+	DNS             DNSConfig             `json:"dns"`
+	Routing         RoutingConfig         `json:"routing"`
+	Outbounds       OutboundConfig        `json:"outbounds"`
+	Performance     PerformanceConfig     `json:"performance"`
+	System          SystemConfig          `json:"system"`
+	Split           SplitConfig           `json:"split"`
+	AutomaticRoute  AutomaticRouteConfig  `json:"automatic_route"`
 }
 
 // SplitConfig 「绝对分流」配置。
@@ -144,13 +144,15 @@ type PerformanceConfig struct {
 	TCPLinger       int  `json:"tcp_linger"`
 }
 
-// ClampBufferSize 限制缓冲区大小在合法运行时范围 [4096, 1048576] (4KB ~ 1MB)
+// ClampBufferSize limits the TProxy userspace relay buffer to [32KB, 2MB].
 func ClampBufferSize(size int) int {
-	if size < 4096 {
-		return 4096
+	const minBufferSize = 32 * 1024
+	const maxBufferSize = 2 * 1024 * 1024
+	if size < minBufferSize {
+		return minBufferSize
 	}
-	if size > 1024*1024 {
-		return 1024 * 1024
+	if size > maxBufferSize {
+		return maxBufferSize
 	}
 	return size
 }
@@ -214,23 +216,23 @@ type Server struct {
 // AutomaticRouteConfig 动态线路调度器配置
 type AutomaticRouteConfig struct {
 	Enabled              bool          `json:"enabled"`
-	CheckInterval        int           `json:"check_interval"`          // 秒，Active 线路检测周期 (默认 5)
-	StandbyCheckInterval int           `json:"standby_check_interval"`  // 秒，Standby 线路检测周期 (默认 30)
-	RecoverCheckInterval int           `json:"recover_check_interval"`  // 秒，Failed 线路恢复检测周期 (默认 120)
-	SwitchThreshold      float64       `json:"switch_threshold"`        // 切换分值门槛 (默认 5.0)
-	SwitchCooldown       int           `json:"switch_cooldown"`         // 切换冷却时间/秒 (默认 60)
-	MinimumStableTime    int           `json:"minimum_stable_time"`     // 候选线路需持续稳定的最小秒数 (默认 30)
-	FailureThreshold     int           `json:"failure_threshold"`       // 判定故障的连续失败次数 (默认 3)
-	RecoveryThreshold    int           `json:"recovery_threshold"`      // 判定恢复的连续成功次数 (默认 3)
-	PeakMode             string        `json:"peak_mode"`               // "auto" | "scheduled" | "always" | "never" (默认 "auto")
-	PeakStartHour        int           `json:"peak_start_hour"`         // 默认 18
-	PeakEndHour          int           `json:"peak_end_hour"`           // 默认 23
-	HistoryWindow        int           `json:"history_window"`          // 历史平滑窗口/分钟 (默认 60)
-	StandbyCount         int           `json:"standby_count"`           // 备用线路数量 (默认 3)
-	MaxProbeConcurrency  int           `json:"max_probe_concurrency"`   // 最大探测并发数 (默认 4)
-	HistoryFile          string        `json:"history_file"`            // 历史数据保存路径 (默认 "routes_history.json")
-	HistorySaveInterval  int           `json:"history_save_interval"`   // 历史保存周期/秒 (默认 300)
-	Routes               []RouteConfig `json:"routes"`                  // 预配置线路列表
+	CheckInterval        int           `json:"check_interval"`
+	StandbyCheckInterval int           `json:"standby_check_interval"`
+	RecoverCheckInterval int           `json:"recover_check_interval"`
+	SwitchThreshold      float64       `json:"switch_threshold"`
+	SwitchCooldown       int           `json:"switch_cooldown"`
+	MinimumStableTime    int           `json:"minimum_stable_time"`
+	FailureThreshold     int           `json:"failure_threshold"`
+	RecoveryThreshold    int           `json:"recovery_threshold"`
+	PeakMode             string        `json:"peak_mode"`
+	PeakStartHour        int           `json:"peak_start_hour"`
+	PeakEndHour          int           `json:"peak_end_hour"`
+	HistoryWindow        int           `json:"history_window"`
+	StandbyCount         int           `json:"standby_count"`
+	MaxProbeConcurrency  int           `json:"max_probe_concurrency"`
+	HistoryFile          string        `json:"history_file"`
+	HistorySaveInterval  int           `json:"history_save_interval"`
+	Routes               []RouteConfig `json:"routes"`
 }
 
 type RouteConfig struct {
@@ -238,8 +240,8 @@ type RouteConfig struct {
 	Name     string `json:"name"`
 	Address  string `json:"address"`
 	Port     int    `json:"port"`
-	Protocol string `json:"protocol"` // "socks5" | "http"
-	Type     string `json:"type"`     // "goway" | "external"
+	Protocol string `json:"protocol"`
+	Type     string `json:"type"`
 }
 
 func DefaultAutomaticRouteConfig() AutomaticRouteConfig {
@@ -359,7 +361,7 @@ func DefaultConfig() *Config {
 			},
 		},
 		Performance: PerformanceConfig{
-			BufferSize:      256 * 1024,
+			BufferSize:      512 * 1024,
 			TCPNoDelay:      true,
 			TCPSocketBuffer: 0,
 			BidirectWait:    true,
@@ -422,7 +424,6 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		c.Outbounds = *aux.OldOutbound
 	}
 
-	// [v1.2.6 Config] 填充新增项的默认零值防止挂掉
 	if c.System.TProxyPort == 0 {
 		def := DefaultConfig()
 		c.System = def.System
@@ -433,17 +434,11 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	if c.API.DirectConnsLimit == 0 {
 		c.API.DirectConnsLimit = 20
 	}
-	// [split] 合并分流配置的默认值：旧配置无 split 块时 Enabled 保持关闭（不改变原行为），
-	// 其余字段填入面向「零中国痕迹」的安全默认值。
 	c.Split = NormalizeSplit(c.Split)
-
-	// [route] 合并动态线路调度器默认值
 	c.AutomaticRoute = NormalizeAutomaticRoute(c.AutomaticRoute)
 	return nil
 }
 
-// NormalizeSplit 为 SplitConfig 填充安全默认值（加载与热更新共用）。
-// 注意：整个 split 块缺失时 Enabled 默认 false（保持旧版行为），用户显式开启后其余字段即生效。
 func NormalizeSplit(s SplitConfig) SplitConfig {
 	def := DefaultConfig().Split
 	if s.Enabled == nil {
