@@ -2,9 +2,14 @@ name: Release
 
 on:
   push:
+    branches:
+      - 'main'
     tags:
       - 'v*'
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   test:
@@ -13,6 +18,8 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -24,10 +31,8 @@ jobs:
         shell: powershell
         run: |
           if (Test-Path "C:\msys64\mingw64\bin\gcc.exe") {
-            Write-Host "Adding MSYS2 MinGW64 to PATH"
             "C:\msys64\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           } elseif (Test-Path "C:\Strawberry\c\bin\gcc.exe") {
-            Write-Host "Adding Strawberry GCC to PATH"
             "C:\Strawberry\c\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           }
           if (Get-Command gcc -ErrorAction SilentlyContinue) {
@@ -59,6 +64,8 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -69,24 +76,52 @@ jobs:
       - name: Build Windows x64 Executable
         shell: powershell
         run: |
+          $ErrorActionPreference = 'Stop'
           $env:GOOS = "windows"
           $env:GOARCH = "amd64"
           go build -ldflags="-s -w" -o gopass.exe ./cmd/gopass
-          Copy-Item gopass.exe gopass_1.6.5.exe
-          Get-Item gopass.exe, gopass_1.6.5.exe | Select-Object Name, Length
+          $version = if ($env:GITHUB_REF_NAME -match '^v') { $env:GITHUB_REF_NAME } else { 'v1.6.6' }
+          Copy-Item gopass.exe ("gopass_" + $version.TrimStart('v') + ".exe")
+          Get-Item gopass.exe, ("gopass_" + $version.TrimStart('v') + ".exe") | Select-Object Name, Length
+
+      - name: Upload Windows build (main validation)
+        if: github.ref_type == 'branch' && github.ref_name == 'main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gopass-windows-main-${{ github.sha }}
+          path: gopass*.exe
+          if-no-files-found: error
 
       - name: GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          name: GoPass v1.6.5
+          name: GoPass ${{ github.ref_name }}
           body: |
-            GoPass v1.6.5
-            - Decoupled upstream TCP proxy target from TLS SNI (preserve original destination IP for proxied HTTPS)
-            - Prioritized real OrigDstIP over SNI in SOCKS5/HTTP upstream forwarding to maximize Cloudflare Speed Test (CFST) throughput
-            - Added unified ResolveProxyTarget with Fake-IP mapping and graceful SNI fallback
-            - Added comprehensive unit tests and end-to-end regression tests for proxy target resolution
+            GoPass ${{ github.ref_name }}
+
+            - TProxy Buffer 默认值：512 KB
+            - TProxy Buffer 可调范围：32 KB–2 MB
+            - Web UI 提供 32 KB / 256 KB / 512 KB / 1 MB / 2 MB / 自定义预设
+            - 自定义值严格限制在 32 KB–2 MB
+            - Socket Buffer 固定为 0，使用 Windows TCP Auto-Tuning
+            - 普通 Web UI 不再开放底层 TCP Socket Buffer / Linger 等参数
           files: |
             gopass.exe
-            gopass_1.6.5.exe
+            gopass_*.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create release tag after main validation
+        if: github.ref_type == 'branch' && github.ref_name == 'main'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if (git ls-remote --exit-code --tags origin refs/tags/v1.6.6) {
+            Write-Host 'v1.6.6 already exists; nothing to tag.'
+            exit 0
+          }
+          git tag -a v1.6.6 -m 'GoPass v1.6.6' $env:GITHUB_SHA
+          git push origin v1.6.6
