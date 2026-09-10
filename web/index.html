@@ -1,57 +1,8 @@
 <!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GoPass v1.6.7</title>
-    <link rel="stylesheet" href="css/style.css">
-</head>
-<body>
-    <div class="sidebar">
-        <div class="logo">GoPass <span style="font-size:12px;opacity:.6;font-weight:normal">v1.6.7</span></div>
-        <nav>
-            <a href="#dashboard" class="active" id="nav-dashboard">Dashboard</a>
-            <a href="#settings" id="nav-settings">Settings</a>
-        </nav>
-    </div>
-    <div class="main-content">
-        <header>
-            <h1>TCP Proxy Overview</h1>
-            <div style="display:flex;gap:15px;align-items:center">
-                <div class="pid-badge">PID: <span id="sys-pid">--</span></div>
-                <div class="status-indicator"><span id="engine-status" class="status-dot green"></span> Running</div>
-            </div>
-        </header>
-        <div id="view-dashboard">
-            <div class="panels">
-                <div class="panel glass"><h3>Active Connections</h3><h2 id="conn-count">0</h2></div>
-                <div class="panel glass"><h3>Traffic</h3><h2><span id="rx-bytes">0 B/s</span> ↓ / <span id="tx-bytes">0 B/s</span> ↑</h2></div>
-            </div>
-            <section class="card">
-                <h2 id="proxy-title">Proxied Connections</h2>
-                <table><thead><tr><th>Target</th><th>Host</th><th>Policy</th></tr></thead><tbody id="conn-list-proxy"></tbody></table>
-            </section>
-        </div>
-        <div id="view-settings" class="app-view" style="display:none">
-            <div class="glass" style="padding:20px">
-                <h3>Dashboard</h3>
-                <p style="color:#a1a1aa;margin-bottom:15px">Adjust dashboard refresh and connection display limits.</p>
-                <div style="display:flex;gap:10px;align-items:center;margin-bottom:15px"><label style="color:var(--text-secondary);width:130px">Refresh Interval</label><input type="number" id="ws-interval" value="5" min="1" style="padding:10px;width:100px"><span style="color:var(--text-secondary)">Seconds</span></div>
-                <div style="display:flex;gap:10px;align-items:center;margin-bottom:20px"><label style="color:var(--text-secondary);width:130px">Visible Connections</label><input type="number" id="ui-conn-limit" value="20" min="1" style="padding:10px;width:100px"><span style="color:var(--text-secondary)">Items</span></div>
-                <hr style="border:none;border-top:1px solid rgba(255,255,255,.1);margin:30px 0">
-                <h3>Upstream Proxy</h3>
-                <p style="color:#a1a1aa;margin-bottom:20px">All intercepted IPv4 TCP connections are forwarded to this upstream proxy.</p>
-                <div style="display:flex;gap:10px;align-items:center;margin-bottom:15px"><label style="color:var(--text-secondary);width:80px">Protocol</label><select id="upstream-type" style="padding:10px;flex:1"><option value="socks5">SOCKS5</option><option value="http">HTTP CONNECT</option></select></div>
-                <div style="display:flex;gap:10px;align-items:center;margin-bottom:15px"><label style="color:var(--text-secondary);width:80px">Address</label><input type="text" id="upstream-addr" placeholder="127.0.0.1" style="padding:10px;flex:1"></div>
-                <div style="display:flex;gap:10px;align-items:center"><label style="color:var(--text-secondary);width:80px">Port</label><input type="number" id="upstream-port" placeholder="9192" style="padding:10px;width:120px"></div>
-                <hr style="border:none;border-top:1px solid rgba(255,255,255,.1);margin:30px 0">
-                <h3>Relay Performance</h3>
-                <p style="color:#a1a1aa;margin-bottom:15px">Relay buffer: 32 KB–1 MB. There is no 2 MB buffer option.</p>
-                <div style="display:flex;gap:10px;align-items:center;margin-bottom:20px"><label style="color:var(--text-secondary);width:130px">Buffer Size</label><select id="relay-buffer-size" style="padding:10px;width:140px"><option value="32768">32 KB</option><option value="65536">64 KB</option><option value="131072">128 KB</option><option value="262144" selected>256 KB</option><option value="524288">512 KB</option><option value="1048576">1 MB</option></select><span style="color:var(--text-secondary)">maximum 1 MB</span></div>
-                <div style="margin-top:30px;display:flex;gap:15px"><button id="save-settings-btn" style="padding:10px 20px;background:var(--accent);border:none;color:white;border-radius:4px;cursor:pointer">Save Settings</button><span id="settings-save-msg" style="color:#238636;line-height:38px;display:none">✅ Settings Saved</span></div>
-            </div>
-        </div>
-    </div>
-    <script src="js/app.js"></script>
-</body>
-</html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>GoPass v1.6.7</title><link rel="stylesheet" href="css/style.css"></head><body>
+<div class="sidebar"><div class="logo">GoPass <span style="font-size:12px;opacity:.6">v1.6.7</span></div><nav><a href="#dashboard" class="active" id="nav-dashboard">Dashboard</a><a href="#processes" id="nav-processes">Proxy Processes</a><a href="#settings" id="nav-settings">Settings</a></nav></div>
+<div class="main-content"><header><h1 id="page-title">TCP Proxy Overview</h1><div style="display:flex;gap:15px;align-items:center"><div class="pid-badge">PID: <span id="sys-pid">--</span></div><div class="status-indicator"><span id="engine-status" class="status-dot green"></span> Running</div></div></header>
+<div id="view-dashboard"><div class="panels"><div class="panel glass"><h3>GoPass Connections</h3><h2 id="conn-count">0</h2></div><div class="panel glass"><h3>Traffic</h3><h2><span id="rx-bytes">0 B/s</span> ↓ / <span id="tx-bytes">0 B/s</span> ↑</h2></div></div><section class="card"><h2>Active Proxied Connections</h2><table><thead><tr><th>Connection</th><th>Target</th></tr></thead><tbody id="conn-list-proxy"></tbody></table></section></div>
+<div id="view-processes" class="app-view" style="display:none"><div class="glass" style="padding:20px"><h3>Proxy Processes</h3><p style="color:#a1a1aa">Only programs listed here are routed through GoPass. Other programs stay on the normal Windows network path.</p><div style="display:flex;gap:10px;margin:18px 0"><input id="process-input" type="text" placeholder="e.g. chrome.exe" style="padding:10px;flex:1"><button id="add-process-btn" style="padding:10px 18px;background:var(--accent);border:0;color:#fff;border-radius:4px;cursor:pointer">Add Process</button></div><div id="process-list"></div><div id="process-empty" style="color:#a1a1aa">No processes selected. GoPass will not proxy application traffic.</div></div></div>
+<div id="view-settings" class="app-view" style="display:none"><div class="glass" style="padding:20px"><h3>Dashboard</h3><p style="color:#a1a1aa">Only UI refresh/display settings are configurable here.</p><div style="display:flex;gap:10px;align-items:center;margin:15px 0"><label style="width:130px;color:var(--text-secondary)">Refresh Interval</label><input id="ws-interval" type="number" value="5" min="1" style="padding:10px;width:100px"><span>Seconds</span></div><div style="display:flex;gap:10px;align-items:center;margin-bottom:20px"><label style="width:130px;color:var(--text-secondary)">Visible Connections</label><input id="ui-conn-limit" type="number" value="20" min="1" style="padding:10px;width:100px"><span>Items</span></div><hr style="border:none;border-top:1px solid rgba(255,255,255,.1);margin:30px 0"><h3>Upstream Proxy</h3><p style="color:#a1a1aa">All selected process TCP connections use this upstream.</p><div style="display:flex;gap:10px;align-items:center;margin:15px 0"><label style="width:80px;color:var(--text-secondary)">Protocol</label><select id="upstream-type" style="padding:10px;flex:1"><option value="socks5">SOCKS5</option><option value="http">HTTP CONNECT</option></select></div><div style="display:flex;gap:10px;align-items:center;margin-bottom:15px"><label style="width:80px;color:var(--text-secondary)">Address</label><input id="upstream-addr" type="text" style="padding:10px;flex:1"></div><div style="display:flex;gap:10px;align-items:center"><label style="width:80px;color:var(--text-secondary)">Port</label><input id="upstream-port" type="number" style="padding:10px;width:120px"></div><hr style="border:none;border-top:1px solid rgba(255,255,255,.1);margin:30px 0"><h3>Relay Buffer</h3><p style="color:#a1a1aa">Allowed range: 32 KB–1 MB. There is no 2 MB option.</p><div style="display:flex;gap:10px;align-items:center"><label style="width:130px;color:var(--text-secondary)">Buffer Size</label><select id="relay-buffer-size" style="padding:10px;width:140px"><option value="32768">32 KB</option><option value="65536">64 KB</option><option value="131072">128 KB</option><option value="262144">256 KB</option><option value="524288">512 KB</option><option value="1048576">1 MB</option></select></div><div style="margin-top:30px"><button id="save-settings-btn" style="padding:10px 20px;background:var(--accent);border:none;color:#fff;border-radius:4px;cursor:pointer">Save Settings</button> <span id="settings-save-msg" style="display:none;color:#238636">✅ Saved</span></div></div></div>
+</div><script src="js/app.js"></script></body></html>
