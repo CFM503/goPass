@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -25,13 +26,19 @@ type Entry struct {
 	Name string
 }
 
+type pidCacheEntry struct {
+	name      string
+	checkedAt time.Time
+}
+
 type Resolver struct {
-	mu    sync.RWMutex
-	flows map[Flow]Entry
+	mu       sync.RWMutex
+	flows    map[Flow]Entry
+	pidCache map[uint32]pidCacheEntry
 }
 
 var (
-	iphlpapi           = windows.NewLazySystemDLL("iphlpapi.dll")
+	iphlpapi            = windows.NewLazySystemDLL("iphlpapi.dll")
 	getExtendedTCPTable = iphlpapi.NewProc("GetExtendedTcpTable")
 	kernel32            = windows.NewLazySystemDLL("kernel32.dll")
 	openProcess         = kernel32.NewProc("OpenProcess")
@@ -40,19 +47,31 @@ var (
 )
 
 const (
-	afInet                  = 2
-	tcpTableOwnerPidAll     = 5
-	processQueryLimitedInfo  = 0x1000
-	processVMRead            = 0x0010
+	afInet                 = 2
+	tcpTableOwnerPidAll    = 5
+	processQueryLimitedInfo = 0x1000
+	processVMRead           = 0x0010
+	pidNameCacheTTL         = 2 * time.Second
 )
 
-func NewResolver() *Resolver { return &Resolver{flows: make(map[Flow]Entry)} }
+func NewResolver() *Resolver {
+	return &Resolver{
+		flows:    make(map[Flow]Entry),
+		pidCache: make(map[uint32]pidCacheEntry),
+	}
+}
 
 func (r *Resolver) Refresh() error {
 	size := uint32(0)
 	ret, _, _ := getExtendedTCPTable.Call(0, uintptr(unsafe.Pointer(&size)), 0, afInet, tcpTableOwnerPidAll, 0)
 	if ret != 0 && size == 0 {
 		return fmt.Errorf("GetExtendedTcpTable size failed: %d", ret)
+	}
+	if size == 0 {
+		r.mu.Lock()
+		r.flows = make(map[Flow]Entry)
+		r.mu.Unlock()
+		return nil
 	}
 	buf := make([]byte, size)
 	ret, _, err := getExtendedTCPTable.Call(uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&size)), 0, afInet, tcpTableOwnerPidAll, 0)
@@ -61,13 +80,18 @@ func (r *Resolver) Refresh() error {
 	}
 	count := *(*uint32)(unsafe.Pointer(&buf[0]))
 	rowSize := uint32(24)
+	now := time.Now()
 	flows := make(map[Flow]Entry, count)
+	seenPIDs := make(map[uint32]struct{})
+
 	for idx := uint32(0); idx < count; idx++ {
 		off := 4 + idx*rowSize
-		if off+rowSize > uint32(len(buf)) { break }
+		if off+rowSize > uint32(len(buf)) {
+			break
+		}
 		row := buf[off : off+rowSize]
 		state := *(*uint32)(unsafe.Pointer(&row[0]))
-		if state == 1 { // LISTEN: not an outbound flow we need to classify.
+		if state == 1 {
 			continue
 		}
 		localIP := *(*uint32)(unsafe.Pointer(&row[4]))
@@ -75,17 +99,40 @@ func (r *Resolver) Refresh() error {
 		remoteIP := *(*uint32)(unsafe.Pointer(&row[12]))
 		remotePort := ntohs(uint16(*(*uint32)(unsafe.Pointer(&row[16]))))
 		pid := *(*uint32)(unsafe.Pointer(&row[20]))
-		name := processName(pid)
-		flows[Flow{LocalIP: localIP, LocalPort: localPort, RemoteIP: remoteIP, RemotePort: remotePort}] = Entry{
-			Flow: Flow{LocalIP: localIP, LocalPort: localPort, RemoteIP: remoteIP, RemotePort: remotePort},
-			PID:  pid,
-			Name: name,
+		seenPIDs[pid] = struct{}{}
+		name := r.cachedProcessName(pid, now)
+		flow := Flow{LocalIP: localIP, LocalPort: localPort, RemoteIP: remoteIP, RemotePort: remotePort}
+		flows[flow] = Entry{Flow: flow, PID: pid, Name: name}
+	}
+
+	r.mu.Lock()
+	// Keep only PIDs present in the latest TCP snapshot. This prevents a long-lived
+	// cache from retaining dead PID entries while still avoiding OpenProcess per flow.
+	for pid := range r.pidCache {
+		if _, ok := seenPIDs[pid]; !ok {
+			delete(r.pidCache, pid)
 		}
 	}
-	r.mu.Lock()
 	r.flows = flows
 	r.mu.Unlock()
 	return nil
+}
+
+func (r *Resolver) cachedProcessName(pid uint32, now time.Time) string {
+	if pid == 0 {
+		return ""
+	}
+	r.mu.RLock()
+	cached, ok := r.pidCache[pid]
+	r.mu.RUnlock()
+	if ok && now.Sub(cached.checkedAt) < pidNameCacheTTL {
+		return cached.name
+	}
+	name := processName(pid)
+	r.mu.Lock()
+	r.pidCache[pid] = pidCacheEntry{name: name, checkedAt: now}
+	r.mu.Unlock()
+	return name
 }
 
 func (r *Resolver) Lookup(flow Flow) (Entry, bool) {
@@ -98,15 +145,21 @@ func (r *Resolver) Lookup(flow Flow) (Entry, bool) {
 func (r *Resolver) Snapshot() []Entry {
 	r.mu.RLock()
 	out := make([]Entry, 0, len(r.flows))
-	for _, e := range r.flows { out = append(out, e) }
+	for _, e := range r.flows {
+		out = append(out, e)
+	}
 	r.mu.RUnlock()
 	return out
 }
 
 func processName(pid uint32) string {
-	if pid == 0 { return "" }
+	if pid == 0 {
+		return ""
+	}
 	ret, _, _ := openProcess.Call(processQueryLimitedInfo|processVMRead, 0, uintptr(pid))
-	if ret == 0 { return "" }
+	if ret == 0 {
+		return ""
+	}
 	h := windows.Handle(ret)
 	defer closeHandle.Call(ret)
 	buf := make([]uint16, windows.MAX_PATH)
@@ -115,10 +168,14 @@ func processName(pid uint32) string {
 		ok, _, _ := queryProcessName.Call(uintptr(h), 0, uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&n)))
 		if ok != 0 {
 			path := syscall.UTF16ToString(buf[:n])
-			if p := strings.LastIndexAny(path, `\\/`); p >= 0 { return path[p+1:] }
+			if p := strings.LastIndexAny(path, `\\/`); p >= 0 {
+				return path[p+1:]
+			}
 			return path
 		}
-		if len(buf) >= 32768 { return "" }
+		if len(buf) >= 32768 {
+			return ""
+		}
 		buf = make([]uint16, len(buf)*2)
 	}
 }
