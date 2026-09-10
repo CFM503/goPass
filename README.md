@@ -10,7 +10,7 @@ GoPass is a Windows **process-whitelist transparent TCP proxy**. Its job is inte
 - **上游 SOCKS5 / HTTP CONNECT**：白名单程序统一使用设置页配置的上游代理。
 - **本地 Web UI**：`http://127.0.0.1:8080`，只有三个页面：状态、进程白名单、设置。
 - **实时进程状态**：状态页显示当前有 TCP 网络连接的程序、PID、代理/直连状态、连接数和目标 IP:端口。
-- **固定内部转发缓冲**：内部使用 256 KB relay buffer，不提供用户性能调节项，运行时不允许超过 1 MB。
+- **TProxy Buffer Size**：设置页保留 32 KB–1 MB 的转发缓冲区选项，默认 256 KB，并由运行时统一限制上限 1 MB。
 
 ## Web UI
 
@@ -39,13 +39,16 @@ BigEyesTV.exe
 
 ### 设置
 
-仅提供 GoPass 必需设置：
+提供 GoPass 必需设置：
 
 - 上游协议：SOCKS5 / HTTP CONNECT
 - 上游地址
 - 上游端口
+- **TProxy Buffer Size：32 KB / 64 KB / 128 KB / 256 KB / 512 KB / 1 MB**
 - TProxy 端口（当前默认 7893）
 - Web UI 地址（当前默认 127.0.0.1:8080）
+
+其他 TCP 性能参数不开放到 UI。
 
 ## 明确不做
 
@@ -58,7 +61,7 @@ GoPass 不提供：
 - UDP / QUIC
 - 自动选路、测速、探测、路线评分
 - 多线路和复杂规则系统
-- 用户可调的 TCP 性能参数或 Buffer 参数
+- 其他无关业务逻辑
 
 ## 工作方式
 
