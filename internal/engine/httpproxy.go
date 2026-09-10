@@ -11,13 +11,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/CFM503/goPass/internal/version"
 	"golang.org/x/net/proxy"
 )
 
 type HTTPProxyDialer struct { proxyAddr, username, password string; forward proxy.Dialer }
 
 func NewHTTPProxy(addr, username, password string, forward proxy.Dialer) (proxy.Dialer, error) {
-	if forward == nil { forward = proxy.Direct }
 	if !strings.Contains(addr, ":") { addr += ":80" }
 	return &HTTPProxyDialer{proxyAddr:addr,username:username,password:password,forward:forward},nil
 }
@@ -32,7 +32,7 @@ func (d *HTTPProxyDialer) Dial(network, addr string) (net.Conn,error) {
 	req,err:=http.NewRequest("CONNECT",reqURL.String(),nil); if err!=nil{return fail(err)}
 	req.Close=false
 	if d.username!="" { auth:=d.username+":"+d.password; req.Header.Set("Proxy-Authorization","Basic "+base64.StdEncoding.EncodeToString([]byte(auth))) }
-	req.Header.Set("User-Agent","GoPass/1.6.7")
+	req.Header.Set("User-Agent","GoPass/"+strings.TrimPrefix(version.Version,"v"))
 	if err=req.Write(c);err!=nil{return fail(fmt.Errorf("send CONNECT request failed: %w",err))}
 
 	br:=bufio.NewReader(c)
