@@ -1,5 +1,14 @@
 # GoPass Changelog
 
+## v1.7.6
+
+- **修复 Chromium/YouTube HTTP/3 导致的联网失败**：增加仅针对白名单进程的 IPv4 UDP/443 识别与阻断，让使用 QUIC/HTTP3 的浏览器快速回退到 TCP 代理路径。
+- **严格保持白名单边界**：只有已加入 GoPass 白名单的进程会阻断 UDP/443；其他程序的 UDP/443 原样直连，不进入 GoPass 上游代理。
+- **不引入 UDP 代理**：GoPass 仍不转发 UDP 数据，只增加轻量 QUIC fallback 处理，避免引入 UDP 会话状态和额外带宽/内存开销。
+- **低开销进程识别**：复用现有 Windows 进程解析器的 250ms 快照，同时读取 UDP endpoint→PID 映射，数据包路径保持 O(1) 查表。
+- **共享进程快照**：TCP 透明代理和 UDP/443 blocker 共用同一个进程解析器，避免重复刷新 Windows TCP/UDP 表。
+- **保持 v1.7.5 Web UI 优化**：状态页轮询仍为 3 秒，并在页面/标签页不可见时自动暂停。
+
 ## v1.7.5
 
 - **降低 Web UI 轮询开销**：状态页从每 2 秒刷新调整为每 3 秒刷新，减少 `/api/status` 请求和后台状态查询压力。
