@@ -13,7 +13,7 @@ import (
 	"github.com/CFM503/goPass/internal/config"
 )
 
-const defaultRelayBufferSize = 256 * 1024
+const defaultRelayBufferSize = 64 * 1024
 
 var relayBufferPool = sync.Pool{New: func() any { return make([]byte, defaultRelayBufferSize) }}
 
@@ -98,6 +98,7 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 	srcIP, srcPort := tcpAddr.IP.String(), uint16(tcpAddr.Port)
 	target, found := tp.tracker.Get(srcIP, srcPort)
 	if !found { return }
+	tp.tracker.Activate(srcIP, srcPort)
 	defer tp.tracker.Delete(srcIP, srcPort)
 
 	targetAddr, err := originalTarget(target.OrigDstIP, target.OrigDstPort)
