@@ -47,10 +47,9 @@ var (
 )
 
 const (
-	afInet                 = 2
-	tcpTableOwnerPidAll    = 5
+	afInet                  = 2
+	tcpTableOwnerPidAll     = 5
 	processQueryLimitedInfo = 0x1000
-	processVMRead           = 0x0010
 	pidNameCacheTTL         = 2 * time.Second
 )
 
@@ -106,8 +105,6 @@ func (r *Resolver) Refresh() error {
 	}
 
 	r.mu.Lock()
-	// Keep only PIDs present in the latest TCP snapshot. This prevents a long-lived
-	// cache from retaining dead PID entries while still avoiding OpenProcess per flow.
 	for pid := range r.pidCache {
 		if _, ok := seenPIDs[pid]; !ok {
 			delete(r.pidCache, pid)
@@ -156,7 +153,9 @@ func processName(pid uint32) string {
 	if pid == 0 {
 		return ""
 	}
-	ret, _, _ := openProcess.Call(processQueryLimitedInfo|processVMRead, 0, uintptr(pid))
+	// QueryFullProcessImageNameW only needs PROCESS_QUERY_LIMITED_INFORMATION.
+	// Avoiding PROCESS_VM_READ also makes protected-process classification more reliable.
+	ret, _, _ := openProcess.Call(processQueryLimitedInfo, 0, uintptr(pid))
 	if ret == 0 {
 		return ""
 	}
