@@ -10,7 +10,7 @@ GoPass is a Windows **process-whitelist transparent TCP proxy**. Its job is inte
 - **上游 SOCKS5 / HTTP CONNECT**：白名单程序统一使用设置页配置的上游代理。
 - **本地 Web UI**：`http://127.0.0.1:8080`，只有三个页面：状态、进程白名单、设置。
 - **实时进程状态**：状态页显示当前有 TCP 网络连接的程序、PID、代理/直连状态、连接数和目标 IP:端口。
-- **TProxy Buffer Size**：设置页保留 32 KB–1 MB 的转发缓冲区选项，默认 256 KB，并由运行时统一限制上限 1 MB。
+- **TProxy Buffer Size**：设置页保留 32 KB–1 MB 的转发缓冲区选项，默认 **64 KB**，由运行时统一限制上限 1 MB。
 
 ## Web UI
 
@@ -95,4 +95,4 @@ GoPass 需要管理员权限运行，因为 WinDivert 需要提升权限。
 
 ## 1.7.0
 
-本版本在 1.6.8 的功能收敛基础上完成依赖清理和版本重新编号。移除已废弃的 WebSocket 依赖并同步 vendor，避免 Go 的 inconsistent vendoring 构建错误。代理功能和 Web UI 设计保持不变。
+本版本在 1.6.8 的功能收敛基础上完成依赖清理和版本重新编号，并进一步优化高并发透明转发：连接跟踪使用独立映射端口，避免 Windows 本地端口复用造成串流；长连接不会因短 TTL 被 GC；进程名查询增加短期缓存；默认转发缓冲区调整为 64 KB，以降低约 1000 个并发连接时的内存压力。代理功能和 Web UI 设计保持不变。
