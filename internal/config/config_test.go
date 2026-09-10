@@ -7,7 +7,7 @@ import (
 
 func TestDefaultConfig(t *testing.T) {
 	c := DefaultConfig()
-	if c.Performance.BufferSize != 256*1024 {
+	if c.Performance.BufferSize != 64*1024 {
 		t.Fatalf("default BufferSize=%d", c.Performance.BufferSize)
 	}
 	if len(c.Outbounds.Servers) != 1 || c.Outbounds.Servers[0].Type != "socks5" || c.Outbounds.Servers[0].Port != 9192 {
@@ -24,7 +24,7 @@ func TestDefaultConfig(t *testing.T) {
 func TestClampBufferSize(t *testing.T) {
 	tests := []struct{ in, want int }{
 		{0, 32768}, {-1, 32768}, {32767, 32768}, {32768, 32768},
-		{256 * 1024, 256 * 1024}, {512 * 1024, 512 * 1024},
+		{64 * 1024, 64 * 1024}, {256 * 1024, 256 * 1024}, {512 * 1024, 512 * 1024},
 		{1024 * 1024, 1024 * 1024}, {1024*1024 + 1, 1024 * 1024},
 		{2 * 1024 * 1024, 1024 * 1024},
 	}
