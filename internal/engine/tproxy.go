@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"log"
@@ -35,6 +36,39 @@ func originalTarget(ip net.IP, port uint16) (string, error) {
 	if ip == nil || ip.IsUnspecified() { return "", fmt.Errorf("invalid original destination IP") }
 	if port == 0 { return "", fmt.Errorf("invalid original destination port") }
 	return net.JoinHostPort(ip.String(), strconv.Itoa(int(port))), nil
+}
+
+// readTLSClientHello reads exactly the first TLS record and extracts SNI.
+// This is the important historical YouTube compatibility behavior: the
+// upstream proxy must receive the hostname, not only the intercepted IP.
+// All bytes read are returned so the ClientHello is never lost.
+func readTLSClientHello(conn net.Conn) (readBuf []byte, sni string, err error) {
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	defer conn.SetReadDeadline(time.Time{})
+
+	var buf bytes.Buffer
+	header := make([]byte, 5)
+	n, errRead := io.ReadFull(conn, header)
+	if n > 0 { buf.Write(header[:n]) }
+	if errRead != nil || n < 5 {
+		return buf.Bytes(), "", fmt.Errorf("read TLS header: %w", errRead)
+	}
+	if header[0] != 22 {
+		return buf.Bytes(), "", fmt.Errorf("not TLS handshake: type=%d", header[0])
+	}
+	recordLen := int(header[3])<<8 | int(header[4])
+	if recordLen <= 0 || recordLen > 16384 {
+		return buf.Bytes(), "", fmt.Errorf("invalid TLS record length: %d", recordLen)
+	}
+	body := make([]byte, recordLen)
+	nBody, errBody := io.ReadFull(conn, body)
+	if nBody > 0 { buf.Write(body[:nBody]) }
+	if errBody != nil {
+		return buf.Bytes(), "", fmt.Errorf("read TLS record: %w", errBody)
+	}
+	allData := buf.Bytes()
+	foundSNI, sniErr := ExtractSNI(allData)
+	return allData, foundSNI, sniErr
 }
 
 type TProxy struct {
@@ -103,6 +137,21 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 
 	targetAddr, err := originalTarget(target.OrigDstIP, target.OrigDstPort)
 	if err != nil { return }
+
+	// Historical YouTube fix: for HTTPS, sniff SNI before opening the
+	// upstream connection. Google/YouTube CDNs can require the hostname for
+	// correct routing; dialing the intercepted IP alone is not equivalent.
+	var peekBuf []byte
+	if target.OrigDstPort == 443 {
+		if data, sni, sniffErr := readTLSClientHello(conn); len(data) > 0 {
+			peekBuf = data
+			if sniffErr == nil && sni != "" {
+				targetAddr = net.JoinHostPort(sni, strconv.Itoa(int(target.OrigDstPort)))
+				log.Printf("[TProxy] HTTPS SNI=%s target=%s", sni, targetAddr)
+			}
+		}
+	}
+
 	remote, err := tp.upstream.Dial("tcp", targetAddr)
 	if err != nil {
 		log.Printf("[TProxy] upstream connect failed target=%s: %v", targetAddr, err)
@@ -110,7 +159,6 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 	}
 	defer remote.Close()
 
-	// Stable TCP defaults: only relay buffer size is configurable in v1.7.0.
 	tune := func(c net.Conn) {
 		if tc, ok := c.(*net.TCPConn); ok {
 			_ = tc.SetNoDelay(true)
@@ -120,6 +168,14 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 	}
 	tune(conn)
 	tune(remote)
+
+	// Replay the complete ClientHello that was consumed by SNI sniffing.
+	if len(peekBuf) > 0 {
+		if _, err := remote.Write(peekBuf); err != nil {
+			log.Printf("[TProxy] write buffered TLS ClientHello failed: %v", err)
+			return
+		}
+	}
 
 	if tp.stats != nil {
 		id := fmt.Sprintf("%s:%d", srcIP, srcPort)
