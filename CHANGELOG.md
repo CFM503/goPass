@@ -1,24 +1,14 @@
 # GoPass Changelog
 
-## v1.6.7
+## v1.6.8
 
-- **Core relay rewrite**: GoPass is now a proxy-only IPv4 TCP transparent relay.
-- **Split routing removed**: GeoIP/GeoSite, process whitelist routing, custom direct/proxy rules, CN/foreign routing, Fake-IP DNS relay, IPv6 blocking and foreign UDP/QUIC routing were removed from the core.
-- **2 MB buffer option removed**: relay buffer is now **32 KB–1 MB**, with a hard runtime maximum of 1 MB.
-- **Default relay buffer**: 256 KB.
-- **Relay lifecycle rewritten**: removed the Bidirectional Wait setting; relay errors close both sides so blocked I/O can terminate.
-- **Payload path simplified**: removed SNI inspection/replay from the core, so normal application payload is not buffered and resent for routing decisions.
-- **ConnTracker simplified**: it only transfers Original Destination metadata from WinDivert to TProxy.
-- **WinDivert scope simplified**: IPv4 TCP interception only.
-- **Dashboard simplified**: removed Rules/Split UI; upstream and relay performance settings remain.
-- **Regression coverage added**: relay payload integrity and shutdown tests, plus 32KB–1MB buffer benchmarks.
-- **Version**: v1.6.7.
-
-## v1.6.6
-
-- **TProxy Buffer 默认值**：512 KB。
-- **TProxy Buffer 安全范围**：32 KB–2 MB。
-- **Web UI 预设**：32 KB、256 KB、512 KB（推荐）、1 MB、2 MB，并支持自定义输入。
-- **自定义值校验**：前端与 API/运行时统一限制为 32 KB–2 MB，防止异常大值造成不必要的内存占用。
-- **Socket Buffer**：固定为 `0`，继续使用 Windows TCP Auto-Tuning，不再向用户开放设置。
-- **TCP 高级参数收敛**：TCP NoDelay、Bidirectional Wait、TCP Keep-Alive、Keep-Alive Period、TCP Linger 使用稳定默认值，普通 Web UI 不再允许随意修改。
+- **定位收敛**：GoPass 只负责 Windows 进程白名单 IPv4 TCP 透明劫持与上游代理转发。
+- **白名单模式**：只有名单中的程序通过配置的 SOCKS5 / HTTP CONNECT 上游代理。
+- **非白名单直连**：其他程序保持 Windows 正常网络路径，不进入 GoPass 上游代理。
+- **Web UI 重构**：固定为“状态 / 进程白名单 / 设置”三个页面。
+- **实时状态面板**：显示代理程序、直连程序、代理连接、直连连接，以及程序 PID、连接数和目标 IP:端口。
+- **设置页精简**：只保留上游代理和 GoPass 服务相关配置。
+- **删除用户性能调节**：不再从 Web UI 配置 relay buffer 或 TCP 调优参数；内部 relay buffer 固定为 256 KB，运行时上限不超过 1 MB。
+- **删除无关能力**：不提供 GeoIP/GeoSite、域名/IP 分流、DNS Relay/Fake-IP、SNI 路由、UDP/QUIC、自动选路、测速探测、路线评分、多线路或复杂规则。
+- **WinDivert 范围**：限定为 IPv4 TCP 网络层透明拦截。
+- **版本**：v1.6.8。
