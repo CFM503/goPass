@@ -11,7 +11,6 @@ import (
 	"github.com/CFM503/goPass/internal/api"
 	"github.com/CFM503/goPass/internal/config"
 	"github.com/CFM503/goPass/internal/engine"
-	"github.com/CFM503/goPass/internal/process"
 )
 
 func main() {
@@ -19,13 +18,11 @@ func main() {
 	flag.Parse()
 
 	fmt.Println("=== GoPass 透明代理 ===")
-	fmt.Println("Version: v1.6.6")
+	fmt.Println("Version: v1.6.7")
 	fmt.Printf("PID: %d\n\n", os.Getpid())
 
-	// 运行前自动清理旧依赖项
 	engine.CleanUpDependencies()
 
-	// Load Configuration
 	cfg, err := config.Load(*configFile)
 	if err != nil {
 		log.Printf("配置文件 '%s' 不存在，自动生成默认配置...", *configFile)
@@ -37,30 +34,16 @@ func main() {
 		}
 	}
 
-	// [v1.2.6 Config] 根据配置启动进程缓存与网络连接缓存守护
-	process.InitProcessCache(cfg.System.ProcessCacheRefreshInterval)
-	process.InitNetstatCache(cfg.System.NetstatCacheRefreshInterval)
-
-	// Init Engine
 	eng, err := engine.New(cfg)
-	if err != nil {
-		log.Fatalf("引擎初始化失败: %v", err)
-	}
+	if err != nil { log.Fatalf("引擎初始化失败: %v", err) }
 
-	// Start API & Web UI server (in background)
 	go func() {
 		log.Printf("Web 控制台: http://%s", cfg.API.ListenAddr)
-		if err := api.StartServer(cfg.API.ListenAddr, eng); err != nil {
-			log.Printf("API 服务器错误: %v", err)
-		}
+		if err := api.StartServer(cfg.API.ListenAddr, eng); err != nil { log.Printf("API 服务器错误: %v", err) }
 	}()
 
-	// Start transparent proxy engine
-	if err := eng.Start(); err != nil {
-		log.Fatalf("引擎启动失败: %v", err)
-	}
+	if err := eng.Start(); err != nil { log.Fatalf("引擎启动失败: %v", err) }
 
-	// 阻塞直到 Ctrl+C / SIGTERM
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
 	<-quit
