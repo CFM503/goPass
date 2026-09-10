@@ -23,7 +23,7 @@
     ]
   },
   "performance": {
-    "buffer_size": 32768,
+    "buffer_size": 524288,
     "tcp_nodelay": true,
     "tcp_socket_buffer": 0,
     "bidirectional_wait": true,
