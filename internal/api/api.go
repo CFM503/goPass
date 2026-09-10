@@ -77,8 +77,15 @@ func (s *Server) handleProcessWhitelist(w http.ResponseWriter, r *http.Request) 
 	case http.MethodPost, http.MethodDelete:
 		var req struct{Process string `json:"process"`}
 		if err:=json.NewDecoder(r.Body).Decode(&req); err!=nil || strings.TrimSpace(req.Process)=="" { http.Error(w,"process is required",http.StatusBadRequest); return }
+		process:=strings.TrimSpace(req.Process)
 		list:=s.engine.GetProcessWhitelist()
-		if r.Method==http.MethodPost { list=append(list,req.Process) } else { filtered:=make([]string,0,len(list)); for _,p:=range list { if !strings.EqualFold(p,req.Process){filtered=append(filtered,p)} }; list=filtered }
+		if r.Method==http.MethodPost {
+			already:=false
+			for _, p:=range list { if strings.EqualFold(p,process) { already=true; break } }
+			if !already { list=append(list,process) }
+		} else {
+			filtered:=make([]string,0,len(list)); for _,p:=range list { if !strings.EqualFold(p,process){filtered=append(filtered,p)} }; list=filtered
+		}
 		s.engine.UpdateProcessWhitelist(list,"config.json"); _=json.NewEncoder(w).Encode(map[string]interface{}{"status":"ok","processes":s.engine.GetProcessWhitelist()})
 	default: http.Error(w,"method not allowed",http.StatusMethodNotAllowed)
 	}
