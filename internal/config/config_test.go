@@ -29,7 +29,6 @@ func TestDefaultConfigSplit(t *testing.T) {
 }
 
 func TestSplitResolveDefaults(t *testing.T) {
-	// 旧版 config.json（无 split 块）-> 分流保持关闭（不改变旧行为）
 	old := `{"api":{},"system":{}}`
 	var c Config
 	if err := json.Unmarshal([]byte(old), &c); err != nil {
@@ -40,10 +39,9 @@ func TestSplitResolveDefaults(t *testing.T) {
 		t.Error("旧配置无 split 块时 Enabled 应为 false")
 	}
 	if !r.BlockIPv6 {
-		t.Error("旧配置下 BlockIPv6 应默认 true（保持原有 IPv6 拦截）")
+		t.Error("旧配置下 BlockIPv6 应默认 true")
 	}
 
-	// 显式开启 + 显式关闭 block_ipv6
 	withSplit := `{"split":{"enabled":true,"mode":"geo","block_ipv6":false}}`
 	var c2 Config
 	if err := json.Unmarshal([]byte(withSplit), &c2); err != nil {
@@ -88,7 +86,6 @@ func TestSplitSaveRoundTrip(t *testing.T) {
 }
 
 func TestNormalizeSplitPartial(t *testing.T) {
-	// 模拟 Web UI 仅提交部分字段（无 update_urls / dns 配置）
 	partial := SplitConfig{Enabled: boolPtr(true), Mode: "geo", BlockIPv6: boolPtr(false)}
 	n := NormalizeSplit(partial)
 	if n.UpdateURLs.GeoSite == "" || n.UpdateURLs.GeoIP == "" {
@@ -126,7 +123,6 @@ func TestAutomaticRouteConfigDefaults(t *testing.T) {
 		t.Error("默认应该包含至少 1 条初始线路")
 	}
 
-	// 测试旧版配置反序列化（无 automatic_route 块时自动填充默认值）
 	old := `{"api":{},"system":{}}`
 	var c2 Config
 	if err := json.Unmarshal([]byte(old), &c2); err != nil {
@@ -142,8 +138,8 @@ func TestAutomaticRouteConfigDefaults(t *testing.T) {
 
 func TestPerformanceConfigDefaultsAndBounds(t *testing.T) {
 	c := DefaultConfig()
-	if c.Performance.BufferSize != 262144 {
-		t.Errorf("默认 BufferSize = %d, want 262144", c.Performance.BufferSize)
+	if c.Performance.BufferSize != 512*1024 {
+		t.Errorf("默认 BufferSize = %d, want 524288", c.Performance.BufferSize)
 	}
 	if !c.Performance.TCPNoDelay {
 		t.Error("默认 TCPNoDelay 应为 true")
@@ -167,22 +163,20 @@ func TestPerformanceConfigDefaultsAndBounds(t *testing.T) {
 	tests := []struct {
 		input    int
 		expected int
-		desc     string
 	}{
-		{4095, 4096, "4095 进入运行时后被限制到 4096"},
-		{4096, 4096, "4096 合法"},
-		{262144, 262144, "262144 合法"},
-		{1048576, 1048576, "1048576 合法"},
-		{1048577, 1048576, "1048577 被限制到 1048576"},
-		{0, 4096, "0 被限制到 4096"},
-		{-1, 4096, "负数被限制到 4096"},
+		{32767, 32768},
+		{32768, 32768},
+		{256 * 1024, 256 * 1024},
+		{512 * 1024, 512 * 1024},
+		{1024 * 1024, 1024 * 1024},
+		{2 * 1024 * 1024, 2 * 1024 * 1024},
+		{2*1024*1024 + 1, 2 * 1024 * 1024},
+		{0, 32768},
+		{-1, 32768},
 	}
-
 	for _, tt := range tests {
-		got := ClampBufferSize(tt.input)
-		if got != tt.expected {
-			t.Errorf("ClampBufferSize(%d) [%s] = %d, want %d", tt.input, tt.desc, got, tt.expected)
+		if got := ClampBufferSize(tt.input); got != tt.expected {
+			t.Errorf("ClampBufferSize(%d) = %d, want %d", tt.input, got, tt.expected)
 		}
 	}
 }
-
