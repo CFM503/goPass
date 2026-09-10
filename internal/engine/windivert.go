@@ -14,7 +14,6 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/CFM503/goPass/internal/config"
 	"golang.org/x/sys/windows"
 )
 
@@ -51,10 +50,7 @@ var (
 
 func stopAndRemoveService(name string) {
 	scm, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_CONNECT|windows.SC_MANAGER_CREATE_SERVICE)
-	if err != nil {
-		log.Printf("[WinDivert] 打开服务管理器失败: %v", err)
-		return
-	}
+	if err != nil { return }
 	defer windows.CloseServiceHandle(scm)
 	svc, err := windows.OpenService(scm, syscall.StringToUTF16Ptr(name), windows.SERVICE_STOP|windows.SERVICE_QUERY_STATUS|windows.DELETE)
 	if err != nil { return }
@@ -143,17 +139,11 @@ func loadWinDivert() (*winDivertDLL, error) {
 		if err != nil { wdDir = "." }
 		dllPath := filepath.Join(wdDir, "WinDivert.dll")
 		sysPath := filepath.Join(wdDir, "WinDivert64.sys")
-		dllMatch := fileContentMatch(dllPath, windivertDLL)
-		sysMatch := fileContentMatch(sysPath, windivertSYS)
-		if !dllMatch {
-			if err := os.WriteFile(dllPath, windivertDLL, 0755); err != nil {
-				wdErr = fmt.Errorf("write WinDivert.dll failed: %w", err); return
-			}
+		if !fileContentMatch(dllPath, windivertDLL) {
+			if err := os.WriteFile(dllPath, windivertDLL, 0755); err != nil { wdErr = fmt.Errorf("write WinDivert.dll failed: %w", err); return }
 		}
-		if !sysMatch {
-			if err := extractSysFile(sysPath, windivertSYS); err != nil && !fileContentMatch(sysPath, windivertSYS) {
-				wdErr = fmt.Errorf("write WinDivert64.sys failed: %w", err); return
-			}
+		if !fileContentMatch(sysPath, windivertSYS) {
+			if err := extractSysFile(sysPath, windivertSYS); err != nil && !fileContentMatch(sysPath, windivertSYS) { wdErr = fmt.Errorf("write WinDivert64.sys failed: %w", err); return }
 		}
 		if info, err := os.Stat(dllPath); err != nil || info.Size() == 0 { wdErr = fmt.Errorf("WinDivert.dll missing after extraction: %v", err); return }
 		if info, err := os.Stat(sysPath); err != nil || info.Size() == 0 { wdErr = fmt.Errorf("WinDivert64.sys missing after extraction: %v", err); return }
@@ -164,22 +154,12 @@ func loadWinDivert() (*winDivertDLL, error) {
 			if e != nil { wdErr = fmt.Errorf("find %s failed: %w", name, e); return nil }
 			return p
 		}
-		wdDLL = &winDivertDLL{
-			dll: dll,
-			procOpen: findProc("WinDivertOpen"),
-			procRecv: findProc("WinDivertRecv"),
-			procSend: findProc("WinDivertSend"),
-			procClose: findProc("WinDivertClose"),
-			procCalcChecks: findProc("WinDivertHelperCalcChecksums"),
-		}
+		wdDLL = &winDivertDLL{dll: dll, procOpen: findProc("WinDivertOpen"), procRecv: findProc("WinDivertRecv"), procSend: findProc("WinDivertSend"), procClose: findProc("WinDivertClose"), procCalcChecks: findProc("WinDivertHelperCalcChecksums")}
 	})
 	return wdDLL, wdErr
 }
 
-type winDivertHandle struct {
-	handle windows.Handle
-	dll    *winDivertDLL
-}
+type winDivertHandle struct { handle windows.Handle; dll *winDivertDLL }
 
 func wdOpen(filter string, layer, priority int, flags uint64) (*winDivertHandle, error) {
 	dll, err := loadWinDivert()
@@ -217,20 +197,20 @@ func (h *winDivertHandle) CalcChecksums(pkt []byte, addr *winDivertAddress) erro
 
 func (h *winDivertHandle) Close() {
 	if h != nil && h.handle != windows.InvalidHandle {
-		_ = windows.CloseHandle(h.handle)
+		_, _, _ = h.dll.procClose.Call(uintptr(h.handle))
 		h.handle = windows.InvalidHandle
 	}
 }
 
 type Interceptor struct {
-	handle    *winDivertHandle
-	mu        sync.Mutex
-	tracker   *ConnTracker
-	proxyIP   string
-	proxyPort uint16
+	handle     *winDivertHandle
+	mu         sync.Mutex
+	tracker    *ConnTracker
+	proxyIP    string
+	proxyPort  uint16
 	tproxyPort uint16
-	stopCh    chan struct{}
-	closeOnce sync.Once
+	stopCh     chan struct{}
+	closeOnce  sync.Once
 }
 
 func NewInterceptor(tracker *ConnTracker, proxyIP string, proxyPort, tproxyPort uint16) *Interceptor {
@@ -239,18 +219,19 @@ func NewInterceptor(tracker *ConnTracker, proxyIP string, proxyPort, tproxyPort 
 
 func (i *Interceptor) SetProxyAddr(ip string, port uint16) {
 	i.mu.Lock()
-	changed := i.proxyIP != ip || i.proxyPort != port
 	i.proxyIP, i.proxyPort = ip, port
 	i.mu.Unlock()
-	if changed { log.Printf("[WinDivert] upstream proxy updated: %s:%d", ip, port) }
 }
 
 func (i *Interceptor) buildFilter() string {
-	filter := fmt.Sprintf("(outbound and ip and tcp and ip.DstAddr != 127.0.0.1) or (outbound and ip and tcp and tcp.SrcPort == %d)", i.tproxyPort)
-	if ip := net.ParseIP(i.proxyIP); ip != nil && ip.To4() != nil && !ip.IsLoopback() {
-		filter += fmt.Sprintf(" and ip.DstAddr != %s", ip.To4().String())
-	}
-	return filter
+	i.mu.Lock()
+	proxyIP := i.proxyIP
+	tproxyPort := i.tproxyPort
+	i.mu.Unlock()
+	first := "(outbound and ip and tcp and ip.DstAddr != 127.0.0.1"
+	if ip := net.ParseIP(proxyIP); ip != nil && ip.To4() != nil && !ip.IsLoopback() { first += fmt.Sprintf(" and ip.DstAddr != %s", ip.To4().String()) }
+	first += ")"
+	return fmt.Sprintf("%s or (outbound and ip and tcp and tcp.SrcPort == %d)", first, tproxyPort)
 }
 
 func (i *Interceptor) Start() {
@@ -258,7 +239,6 @@ func (i *Interceptor) Start() {
 	if err != nil { log.Printf("[WinDivert] start failed: %v", err); return }
 	i.mu.Lock(); i.handle = h; i.mu.Unlock()
 	log.Println("[WinDivert] TCP interception ready")
-
 	go i.filterUpdater()
 	buf := make([]byte, 65535)
 	for {
@@ -280,8 +260,7 @@ func (i *Interceptor) filterUpdater() {
 	last := i.buildFilter()
 	for {
 		select {
-		case <-i.stopCh:
-			return
+		case <-i.stopCh: return
 		case <-ticker.C:
 			f := i.buildFilter()
 			if f == last { continue }
@@ -304,19 +283,18 @@ func (i *Interceptor) handlePacket(pkt []byte, addr *winDivertAddress) {
 	srcPort := binary.BigEndian.Uint16(pkt[ipHeaderLen : ipHeaderLen+2])
 	dstPort := binary.BigEndian.Uint16(pkt[ipHeaderLen+2 : ipHeaderLen+4])
 
-	if srcPort == i.tproxyPort {
+	i.mu.Lock()
+	proxyIP := i.proxyIP
+	tproxyPort := i.tproxyPort
+	i.mu.Unlock()
+
+	if srcPort == tproxyPort {
 		i.reverseNAT(pkt, addr, ipHeaderLen)
 		return
 	}
-	if net.IP(i.currentProxyIP()).Equal(dstIP) && i.currentProxyIP() != "" { i.sendPass(pkt, addr); return }
+	if proxyIP != "" && net.ParseIP(proxyIP) != nil && net.ParseIP(proxyIP).Equal(dstIP) { i.sendPass(pkt, addr); return }
 	if isPrivateOrLocal(dstIP) { i.sendPass(pkt, addr); return }
-
 	i.hijackTCP(pkt, addr, srcIP, dstIP, srcPort, dstPort, ipHeaderLen)
-}
-
-func (i *Interceptor) currentProxyIP() string {
-	i.mu.Lock(); defer i.mu.Unlock()
-	return i.proxyIP
 }
 
 func (i *Interceptor) hijackTCP(pkt []byte, addr *winDivertAddress, origSrcIP, origDstIP net.IP, srcPort, dstPort uint16, ipHeaderLen int) {
@@ -324,7 +302,8 @@ func (i *Interceptor) hijackTCP(pkt []byte, addr *winDivertAddress, origSrcIP, o
 	loop := net.IPv4(127, 0, 0, 1).To4()
 	copy(pkt[12:16], loop)
 	copy(pkt[16:20], loop)
-	binary.BigEndian.PutUint16(pkt[ipHeaderLen+2:ipHeaderLen+4], i.tproxyPort)
+	i.mu.Lock(); tproxyPort := i.tproxyPort; i.mu.Unlock()
+	binary.BigEndian.PutUint16(pkt[ipHeaderLen+2:ipHeaderLen+4], tproxyPort)
 	addr.Bits |= flagOutbound | flagLoopback
 	if err := i.calcAndSend(pkt, addr); err != nil { log.Printf("[WinDivert] hijack send failed: %v", err) }
 }
@@ -334,7 +313,6 @@ func (i *Interceptor) reverseNAT(pkt []byte, addr *winDivertAddress, ipHeaderLen
 	dstPort := binary.BigEndian.Uint16(pkt[ipHeaderLen+2 : ipHeaderLen+4])
 	target, found := i.tracker.Get(dstIP.String(), dstPort)
 	if !found { i.sendPass(pkt, addr); return }
-
 	copy(pkt[12:16], target.OrigDstIP.To4())
 	binary.BigEndian.PutUint16(pkt[ipHeaderLen:ipHeaderLen+2], target.OrigDstPort)
 	copy(pkt[16:20], target.OrigSrcIP.To4())
@@ -381,12 +359,9 @@ func isPrivateOrLocal(ip net.IP) bool {
 func (i *Interceptor) Close() {
 	i.closeOnce.Do(func() {
 		close(i.stopCh)
-		i.mu.Lock()
-		h := i.handle
-		i.handle = nil
-		i.mu.Unlock()
+		i.mu.Lock(); h := i.handle; i.handle = nil; i.mu.Unlock()
 		if h != nil { h.Close() }
 	})
 }
 
-var _ = config.ClampBufferSize
+var _ = strings.Join
