@@ -1,16 +1,15 @@
 package engine
 
-// UpstreamDialer 上游代理拨号器缓存（SOCKS5 / HTTP CONNECT），
-// 由 TProxy 与 DNSRelay 共享，支持热切换（原子替换缓存 Dialer）。
-
 import (
 	"net"
 	"sync"
+	"time"
 
 	"golang.org/x/net/proxy"
 )
 
-// UpstreamDialer 缓存并复用上游代理 Dialer。
+const upstreamConnectTimeout = 10 * time.Second
+
 type UpstreamDialer struct {
 	mu        sync.RWMutex
 	pType     string
@@ -19,81 +18,45 @@ type UpstreamDialer struct {
 	cachedKey string
 }
 
-// NewUpstreamDialer 创建上游拨号器。
-func NewUpstreamDialer(pType, pAddr string) *UpstreamDialer {
-	return &UpstreamDialer{pType: pType, pAddr: pAddr}
-}
+func NewUpstreamDialer(pType, pAddr string) *UpstreamDialer { return &UpstreamDialer{pType: pType, pAddr: pAddr} }
 
-// Update 热切换上游代理（清空缓存，下次 Dial 重建）。
 func (u *UpstreamDialer) Update(pType, pAddr string) {
 	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.pType = pType
-	u.pAddr = pAddr
-	u.cached = nil
-	u.cachedKey = ""
+	u.pType, u.pAddr, u.cached, u.cachedKey = pType, pAddr, nil, ""
+	u.mu.Unlock()
 }
 
-// Current 返回当前上游代理类型与地址。
-func (u *UpstreamDialer) Current() (string, string) {
-	u.mu.RLock()
-	defer u.mu.RUnlock()
-	return u.pType, u.pAddr
-}
+func (u *UpstreamDialer) Current() (string, string) { u.mu.RLock(); defer u.mu.RUnlock(); return u.pType, u.pAddr }
 
-// SetDialer 设置自定义 dialer（用于单元测试 mock 或扩展包装）。
-func (u *UpstreamDialer) SetDialer(d proxy.Dialer) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.cached = d
-	u.cachedKey = "custom"
-}
+func (u *UpstreamDialer) SetDialer(d proxy.Dialer) { u.mu.Lock(); u.cached, u.cachedKey = d, "custom"; u.mu.Unlock() }
 
-// Dialer 返回（缓存的）proxy.Dialer。
 func (u *UpstreamDialer) Dialer() (proxy.Dialer, error) {
 	u.mu.RLock()
-	if u.cachedKey == "custom" && u.cached != nil {
-		d := u.cached
-		u.mu.RUnlock()
-		return d, nil
-	}
+	if u.cachedKey == "custom" && u.cached != nil { d := u.cached; u.mu.RUnlock(); return d, nil }
 	key := u.pType + "://" + u.pAddr
-	if u.cached != nil && u.cachedKey == key {
-		d := u.cached
-		u.mu.RUnlock()
-		return d, nil
-	}
+	if u.cached != nil && u.cachedKey == key { d := u.cached; u.mu.RUnlock(); return d, nil }
 	pType, pAddr := u.pType, u.pAddr
 	u.mu.RUnlock()
 
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	if u.cachedKey == "custom" && u.cached != nil {
-		return u.cached, nil
-	}
-	if u.cached != nil && u.cachedKey == key {
-		return u.cached, nil
-	}
+	if u.cachedKey == "custom" && u.cached != nil { return u.cached, nil }
+	if u.cached != nil && u.cachedKey == key { return u.cached, nil }
 
+	forward := &net.Dialer{Timeout: upstreamConnectTimeout, KeepAlive: 30 * time.Second}
 	var d proxy.Dialer
 	var err error
 	if pType == "http" {
-		d, err = NewHTTPProxy(pAddr, "", "", proxy.Direct)
+		d, err = NewHTTPProxy(pAddr, "", "", forward)
 	} else {
-		d, err = proxy.SOCKS5("tcp", pAddr, nil, proxy.Direct)
+		d, err = proxy.SOCKS5("tcp", pAddr, nil, forward)
 	}
-	if err == nil {
-		u.cached = d
-		u.cachedKey = key
-	}
+	if err == nil { u.cached, u.cachedKey = d, key }
 	return d, err
 }
 
-// Dial 通过上游代理建立到 addr 的连接。
-func (u *UpstreamDialer) Dial(network, addr string) (conn net.Conn, err error) {
+func (u *UpstreamDialer) Dial(network, addr string) (net.Conn, error) {
 	d, err := u.Dialer()
-	if err != nil {
-		return nil, err
-	}
+	if err != nil { return nil, err }
 	return d.Dial(network, addr)
 }
