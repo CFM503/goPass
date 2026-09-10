@@ -70,7 +70,7 @@ jobs:
           $env:GOOS = "windows"
           $env:GOARCH = "amd64"
           go build -ldflags="-s -w" -o gopass.exe ./cmd/gopass
-          $version = if ($env:GITHUB_REF_NAME -match '^v') { $env:GITHUB_REF_NAME } else { 'v1.6.7' }
+          $version = if ($env:GITHUB_REF_NAME -match '^v') { $env:GITHUB_REF_NAME } else { 'v1.6.8' }
           $versioned = "gopass_" + $version.TrimStart('v') + ".exe"
           Copy-Item gopass.exe $versioned
           Get-Item gopass.exe, $versioned | Select-Object Name, Length
@@ -85,19 +85,20 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v') || (github.ref_type == 'branch' && github.ref_name == 'main')
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'v1.6.7' }}
-          name: GoPass ${{ github.ref_type == 'tag' && github.ref_name || 'v1.6.7' }}
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'v1.6.8' }}
+          name: GoPass ${{ github.ref_type == 'tag' && github.ref_name || 'v1.6.8' }}
           body: |
-            GoPass ${{ github.ref_type == 'tag' && github.ref_name || 'v1.6.7' }}
+            GoPass ${{ github.ref_type == 'tag' && github.ref_name || 'v1.6.8' }}
 
-            - Core rewritten as a proxy-only IPv4 TCP transparent relay
-            - Split/Geo/Process/DNS relay/Fake-IP routing removed
-            - Relay buffer range: 32 KB–1 MB
-            - Default relay buffer: 256 KB
-            - Bidirectional-wait parameter removed
-            - WinDivert limited to IPv4 TCP interception
+            - Process-whitelist transparent IPv4 TCP interception
+            - Only whitelisted applications use the configured upstream SOCKS5/HTTP proxy
+            - Non-whitelisted applications remain on the normal Windows direct path
+            - Minimal Web UI: status, process whitelist, upstream settings
+            - Live process panel shows proxy/direct status, PID, connection count and target IP:port
+            - No GeoIP/GeoSite, DNS relay/Fake-IP, SNI, UDP/QUIC, automatic routing or route probing
+            - Relay buffer is fixed internally at 256 KB
           files: |
-            gopass_1.6.7.exe
+            gopass_1.6.8.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Create release tag after main validation
@@ -107,9 +108,9 @@ jobs:
           $ErrorActionPreference = 'Stop'
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          if (git ls-remote --exit-code --tags origin refs/tags/v1.6.7) {
-            Write-Host 'v1.6.7 already exists; nothing to tag.'
+          if (git ls-remote --exit-code --tags origin refs/tags/v1.6.8) {
+            Write-Host 'v1.6.8 already exists; nothing to tag.'
             exit 0
           }
-          git tag -a v1.6.7 -m 'GoPass v1.6.7' $env:GITHUB_SHA
-          git push origin v1.6.7
+          git tag -a v1.6.8 -m 'GoPass v1.6.8' $env:GITHUB_SHA
+          git push origin v1.6.8
