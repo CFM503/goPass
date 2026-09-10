@@ -109,7 +109,7 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 	}
 	defer remote.Close()
 
-	// Stable TCP defaults: only relay buffer size is configurable in v1.6.8.
+	// Stable TCP defaults: only relay buffer size is configurable in v1.7.0.
 	tune := func(c net.Conn) {
 		if tc, ok := c.(*net.TCPConn); ok {
 			_ = tc.SetNoDelay(true)
