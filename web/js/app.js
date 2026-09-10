@@ -1,140 +1,18 @@
-let uiConnLimit = 20;
-let lastConnHash = 0;
-let _domCache = null;
-
-function getDOM() {
-    if (_domCache) return _domCache;
-    _domCache = {
-        sysPid: document.getElementById('sys-pid'),
-        connCount: document.getElementById('conn-count'),
-        rxBytes: document.getElementById('rx-bytes'),
-        txBytes: document.getElementById('tx-bytes'),
-        proxyBody: document.getElementById('conn-list-proxy'),
-        proxyTitle: document.getElementById('proxy-title')
-    };
-    return _domCache;
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-    connectWS();
-    loadSettings();
-    loadUpstream();
-    loadPerformance();
-    const dashboard = document.getElementById('nav-dashboard');
-    const settings = document.getElementById('nav-settings');
-    const dashboardView = document.getElementById('view-dashboard');
-    const settingsView = document.getElementById('view-settings');
-    if (dashboard && settings && dashboardView && settingsView) {
-        dashboard.addEventListener('click', e => { e.preventDefault(); dashboard.classList.add('active'); settings.classList.remove('active'); dashboardView.style.display='block'; settingsView.style.display='none'; });
-        settings.addEventListener('click', e => { e.preventDefault(); settings.classList.add('active'); dashboard.classList.remove('active'); dashboardView.style.display='none'; settingsView.style.display='block'; });
-    }
-    const saveButton = document.getElementById('save-settings-btn');
-    if (saveButton) saveButton.addEventListener('click', saveSettings);
-});
-
-function connectWS() {
-    const socket = new WebSocket(`ws://${window.location.host}/ws`);
-    socket.onopen = () => setEngineStatus(true);
-    socket.onmessage = event => {
-        try {
-            const data = JSON.parse(event.data);
-            const dom = getDOM();
-            if (dom.sysPid) dom.sysPid.innerText = data.pid ?? 0;
-            if (dom.connCount) dom.connCount.innerText = data.connections ?? 0;
-            if (dom.rxBytes) dom.rxBytes.innerText = data.rx || '0 B/s';
-            if (dom.txBytes) dom.txBytes.innerText = data.tx || '0 B/s';
-            renderConnections(Array.isArray(data.active) ? data.active : [], dom);
-        } catch (err) { console.error('invalid websocket message', err); }
-    };
-    socket.onclose = () => { setEngineStatus(false); setTimeout(connectWS, 3000); };
-    socket.onerror = () => socket.close();
-}
-
-function setEngineStatus(ready) {
-    const el = document.getElementById('engine-status');
-    if (!el) return;
-    el.classList.toggle('green', ready);
-    el.classList.toggle('red', !ready);
-}
-
-function renderConnections(conns, dom = getDOM()) {
-    const visible = conns.slice(0, Math.max(1, uiConnLimit));
-    const hashInput = visible.map(c => `${c.id || ''}|${c.target || ''}`).join('\n');
-    let hash = 0;
-    for (let i = 0; i < hashInput.length; i++) hash = ((hash << 5) - hash + hashInput.charCodeAt(i)) | 0;
-    if (hash === lastConnHash && visible.length === conns.length) return;
-    lastConnHash = hash;
-    if (dom.proxyTitle) dom.proxyTitle.innerText = `Proxied Connections (Top ${uiConnLimit})`;
-    if (dom.proxyBody) {
-        dom.proxyBody.innerHTML = visible.length
-            ? visible.map(c => `<tr><td>${escapeHtml(c.target || 'unknown')}</td><td>${escapeHtml(c.host || '')}</td><td><span style="color:var(--accent)">PROXY</span></td></tr>`).join('')
-            : '<tr><td colspan="3">No active proxied connections.</td></tr>';
-    }
-}
-
-function escapeHtml(value) { return String(value).replace(/[&<>'"]/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[ch])); }
-
-function loadSettings() {
-    fetch('/api/settings').then(checkResponse).then(data => {
-        const ws = document.getElementById('ws-interval');
-        const limit = document.getElementById('ui-conn-limit');
-        if (ws && Number.isFinite(data.ws_refresh_interval)) ws.value = data.ws_refresh_interval;
-        if (limit && Number.isFinite(data.ui_conn_limit)) { limit.value = data.ui_conn_limit; uiConnLimit = Math.max(1, Number(data.ui_conn_limit)); }
-    }).catch(console.error);
-}
-
-function loadUpstream() {
-    fetch('/api/upstream').then(checkResponse).then(data => {
-        const type = document.getElementById('upstream-type');
-        const addr = document.getElementById('upstream-addr');
-        const port = document.getElementById('upstream-port');
-        if (type && data.type) type.value = data.type;
-        if (addr && data.address) addr.value = data.address;
-        if (port && data.port) port.value = data.port;
-    }).catch(console.error);
-}
-
-function loadPerformance() {
-    fetch('/api/performance').then(checkResponse).then(data => {
-        const select = document.getElementById('relay-buffer-size');
-        if (select && Number.isFinite(data.buffer_size)) select.value = String(Math.min(1048576, Math.max(32768, Number(data.buffer_size))));
-    }).catch(console.error);
-}
-
-async function saveSettings() {
-    const btn = document.getElementById('save-settings-btn');
-    const msg = document.getElementById('settings-save-msg');
-    const wsInput = document.getElementById('ws-interval');
-    const limitInput = document.getElementById('ui-conn-limit');
-    const typeInput = document.getElementById('upstream-type');
-    const addrInput = document.getElementById('upstream-addr');
-    const portInput = document.getElementById('upstream-port');
-    const bufferInput = document.getElementById('relay-buffer-size');
-    let wsInterval = Number.parseInt(wsInput?.value || '5', 10);
-    let connLimit = Number.parseInt(limitInput?.value || '20', 10);
-    const type = typeInput?.value || 'socks5';
-    const address = (addrInput?.value || '').trim();
-    const port = Number.parseInt(portInput?.value || '0', 10);
-    const bufferSize = Number.parseInt(bufferInput?.value || '262144', 10);
-    if (!Number.isFinite(wsInterval) || wsInterval < 1) wsInterval = 5;
-    if (!Number.isFinite(connLimit) || connLimit < 1) connLimit = 20;
-    if (!Number.isFinite(bufferSize) || bufferSize < 32768 || bufferSize > 1048576) { alert('Relay buffer must be between 32 KB and 1 MB.'); return; }
-    if (!address || !Number.isInteger(port) || port < 1 || port > 65535) { alert('Please enter a valid upstream address and port.'); return; }
-    if (btn) btn.innerText = 'Saving...';
-    try {
-        const [settingsRes, upstreamRes, perfRes] = await Promise.all([
-            fetch('/api/settings', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ ws_refresh_interval:wsInterval, ui_conn_limit:connLimit }) }),
-            fetch('/api/upstream', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ type, address, port }) }),
-            fetch('/api/performance', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ buffer_size:bufferSize, tcp_nodelay:true, tcp_keep_alive:true, keep_alive_period:15, tcp_linger:-1 }) })
-        ]);
-        const settings = await settingsRes.json();
-        const upstream = await upstreamRes.json();
-        const perf = await perfRes.json();
-        if (settings.status !== 'ok' || upstream.status !== 'ok' || perf.status !== 'ok') throw new Error('save failed');
-        uiConnLimit = connLimit;
-        if (msg) { msg.style.display='inline-block'; setTimeout(() => { msg.style.display='none'; }, 3000); }
-    } catch (err) { console.error(err); alert('Failed to save settings.'); }
-    finally { if (btn) btn.innerText = 'Save Settings'; }
-}
-
-function checkResponse(res) { if (!res.ok) throw new Error(`HTTP ${res.status}`); return res.json(); }
+let uiConnLimit=20, domCache=null;
+function $(id){return document.getElementById(id)}
+function getDOM(){if(domCache)return domCache;return domCache={sysPid:$('sys-pid'),connCount:$('conn-count'),rx:$('rx-bytes'),tx:$('tx-bytes'),connBody:$('conn-list-proxy')}}
+document.addEventListener('DOMContentLoaded',()=>{bindNav();loadSettings();loadUpstream();loadPerformance();loadProcesses();connectWS();$('add-process-btn')?.addEventListener('click',addProcess);$('process-input')?.addEventListener('keydown',e=>{if(e.key==='Enter')addProcess()});$('save-settings-btn')?.addEventListener('click',saveSettings)});
+function bindNav(){const views={dashboard:'view-dashboard',processes:'view-processes',settings:'view-settings'};const nav={dashboard:'nav-dashboard',processes:'nav-processes',settings:'nav-settings'};for(const k of Object.keys(nav))$(nav[k])?.addEventListener('click',e=>{e.preventDefault();for(const x of Object.keys(nav)){$(nav[x])?.classList.toggle('active',x===k);$(views[x]).style.display=x===k?'block':'none'};$('page-title').innerText=k==='dashboard'?'TCP Proxy Overview':k==='processes'?'Proxy Processes':'Settings';if(k==='processes')loadProcesses()})}
+function connectWS(){const s=new WebSocket(`ws://${location.host}/ws`);s.onopen=()=>setStatus(true);s.onmessage=e=>{try{const d=JSON.parse(e.data),o=getDOM();o.sysPid.innerText=d.pid??0;o.connCount.innerText=d.connections??0;o.rx.innerText=d.rx||'0 B/s';o.tx.innerText=d.tx||'0 B/s';renderConnections(Array.isArray(d.active)?d.active:[])}catch(err){console.error(err)}};s.onclose=()=>{setStatus(false);setTimeout(connectWS,3000)};s.onerror=()=>s.close()}
+function setStatus(ok){const e=$('engine-status');if(e){e.classList.toggle('green',ok);e.classList.toggle('red',!ok)}}
+function renderConnections(c){const list=c.slice(0,uiConnLimit);const b=getDOM().connBody;b.innerHTML=list.length?list.map(x=>`<tr><td>${esc(x.id||'')}</td><td>${esc(x.target||'')}</td></tr>`).join(''):'<tr><td colspan="2">No active proxied connections.</td></tr>'}
+function esc(v){return String(v).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
+function loadSettings(){fetch('/api/settings').then(ok).then(d=>{$('ws-interval').value=d.ws_refresh_interval||5;$('ui-conn-limit').value=d.ui_conn_limit||20;uiConnLimit=Math.max(1,Number(d.ui_conn_limit||20))}).catch(console.error)}
+function loadUpstream(){fetch('/api/upstream').then(ok).then(d=>{$('upstream-type').value=d.type||'socks5';$('upstream-addr').value=d.address||'';$('upstream-port').value=d.port||9192}).catch(console.error)}
+function loadPerformance(){fetch('/api/performance').then(ok).then(d=>{$('relay-buffer-size').value=String(Math.min(1048576,Math.max(32768,Number(d.buffer_size||262144))))}).catch(console.error)}
+function loadProcesses(){fetch('/api/process-whitelist').then(ok).then(d=>renderProcesses(Array.isArray(d.processes)?d.processes:[])).catch(console.error)}
+function renderProcesses(list){const box=$('process-list'),empty=$('process-empty');empty.style.display=list.length?'none':'block';box.innerHTML=list.map(p=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:10px;margin:8px 0;background:rgba(255,255,255,.05);border-radius:5px"><strong>${esc(p)}</strong><button onclick="removeProcess('${esc(p)}')" style="padding:5px 10px;background:rgba(255,50,50,.2);border:1px solid rgba(255,50,50,.5);color:#fff;border-radius:4px;cursor:pointer">Remove</button></div>`).join('')}
+async function addProcess(){const input=$('process-input');const p=input?.value.trim();if(!p)return;try{const r=await fetch('/api/process-whitelist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({process:p})});if(!r.ok)throw new Error(await r.text());input.value='';const d=await r.json();renderProcesses(d.processes||[])}catch(e){console.error(e);alert('Failed to add process')}}
+window.removeProcess=async function(p){try{const r=await fetch('/api/process-whitelist',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({process:p})});if(!r.ok)throw new Error(await r.text());const d=await r.json();renderProcesses(d.processes||[])}catch(e){console.error(e);alert('Failed to remove process')}};
+async function saveSettings(){const btn=$('save-settings-btn');const msg=$('settings-save-msg');const ws=Math.max(1,parseInt($('ws-interval').value||'5',10));const limit=Math.max(1,parseInt($('ui-conn-limit').value||'20',10));const type=$('upstream-type').value;const address=$('upstream-addr').value.trim();const port=parseInt($('upstream-port').value||'0',10);const buffer=Math.min(1048576,Math.max(32768,parseInt($('relay-buffer-size').value||'262144',10)));if(!address||port<1||port>65535){alert('Invalid upstream address or port');return}btn.innerText='Saving...';try{const rs=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ws_refresh_interval:ws,ui_conn_limit:limit})});const ru=await fetch('/api/upstream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type,address,port})});const rp=await fetch('/api/performance',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({buffer_size:buffer,tcp_nodelay:true,tcp_keep_alive:true,keep_alive_period:15,tcp_linger:-1})});if(!rs.ok||!ru.ok||!rp.ok)throw new Error('save failed');uiConnLimit=limit;msg.style.display='inline-block';setTimeout(()=>msg.style.display='none',2500)}catch(e){console.error(e);alert('Failed to save settings')}finally{btn.innerText='Save Settings'}}
+function ok(r){if(!r.ok)throw new Error(`HTTP ${r.status}`);return r.json()}
