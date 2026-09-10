@@ -76,6 +76,7 @@ func (u *UDPBlocker) Start() error {
 	u.mu.Lock()
 	u.handle = h
 	u.mu.Unlock()
+	_ = u.resolver.Refresh()
 
 	buf := make([]byte, 2048)
 	for {
@@ -123,13 +124,13 @@ func (u *UDPBlocker) handlePacket(pkt []byte, addr *winDivertAddress) {
 		u.sendPass(pkt, addr)
 		return
 	}
-	entry, ok := u.resolver.LookupUDP(process.UDPFlow{LocalIP: srcIP, LocalPort: srcPort})
+	entry, ok := u.resolver.LookupUDPWithRefresh(process.UDPFlow{LocalIP: srcIP, LocalPort: srcPort})
 	if !ok || !u.isWhitelisted(entry.Name) {
 		u.sendPass(pkt, addr)
 		return
 	}
-	// Do not reinject whitelisted UDP/443. This deliberately forces QUIC-aware
-	// clients onto TCP, where the existing whitelist transparent proxy applies.
+	// Deliberately do not reinject whitelisted UDP/443. This is the narrow
+	// QUIC fallback path; non-whitelisted applications keep their UDP traffic.
 }
 
 func (u *UDPBlocker) isWhitelisted(name string) bool {
