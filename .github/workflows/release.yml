@@ -33,7 +33,6 @@ jobs:
           } elseif (Test-Path "C:\Strawberry\c\bin\gcc.exe") {
             "C:\Strawberry\c\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           }
-          if (Get-Command gcc -ErrorAction SilentlyContinue) { Write-Host "gcc found: $(gcc --version | Select-Object -First 1)" }
       - name: Run Tests
         shell: powershell
         run: go test -v ./...
@@ -91,7 +90,7 @@ jobs:
           body: |
             GoPass ${{ github.ref_type == 'tag' && github.ref_name || 'v1.6.7' }}
 
-            - Core rewritten as a TCP transparent relay
+            - Core rewritten as a proxy-only IPv4 TCP transparent relay
             - Split/Geo/Process/DNS relay/Fake-IP routing removed
             - Relay buffer range: 32 KB–1 MB
             - Default relay buffer: 256 KB
