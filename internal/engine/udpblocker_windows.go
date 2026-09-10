@@ -5,7 +5,6 @@ package engine
 import (
 	"encoding/binary"
 	"fmt"
-	"log"
 	"net"
 	"strings"
 	"sync"
@@ -14,10 +13,6 @@ import (
 	"github.com/CFM503/goPass/internal/process"
 )
 
-// UDPBlocker handles only outbound IPv4 UDP/443. GoPass does not proxy UDP.
-// For a whitelisted process we discard QUIC packets so Chromium and other
-// clients can quickly fall back to the existing TCP transparent-proxy path.
-// Non-whitelisted UDP/443 traffic is passed through unchanged.
 type UDPBlocker struct {
 	handle    *winDivertHandle
 	mu        sync.RWMutex
@@ -28,13 +23,8 @@ type UDPBlocker struct {
 	closeOnce sync.Once
 }
 
-func NewUDPBlocker(proxyIP string, whitelist []string) *UDPBlocker {
-	u := &UDPBlocker{
-		resolver:  process.NewResolver(),
-		whitelist: make(map[string]struct{}),
-		proxyIP:   proxyIP,
-		stopCh:    make(chan struct{}),
-	}
+func NewUDPBlocker(resolver *process.Resolver, proxyIP string, whitelist []string) *UDPBlocker {
+	u := &UDPBlocker{resolver: resolver, whitelist: make(map[string]struct{}), proxyIP: proxyIP, stopCh: make(chan struct{})}
 	u.SetWhitelist(whitelist)
 	return u
 }
@@ -86,9 +76,6 @@ func (u *UDPBlocker) Start() error {
 	u.mu.Lock()
 	u.handle = h
 	u.mu.Unlock()
-	_ = u.resolver.Refresh()
-	log.Println("[WinDivert] whitelist-aware UDP/443 QUIC fallback blocker ready")
-	go u.refreshLoop()
 
 	buf := make([]byte, 2048)
 	for {
@@ -119,19 +106,6 @@ func (u *UDPBlocker) Start() error {
 	}
 }
 
-func (u *UDPBlocker) refreshLoop() {
-	ticker := time.NewTicker(250 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-u.stopCh:
-			return
-		case <-ticker.C:
-			_ = u.resolver.Refresh()
-		}
-	}
-}
-
 func (u *UDPBlocker) handlePacket(pkt []byte, addr *winDivertAddress) {
 	if len(pkt) < 28 || (pkt[0]>>4) != 4 || pkt[9] != 17 {
 		u.sendPass(pkt, addr)
@@ -142,23 +116,20 @@ func (u *UDPBlocker) handlePacket(pkt []byte, addr *winDivertAddress) {
 		u.sendPass(pkt, addr)
 		return
 	}
+	srcIP := binary.LittleEndian.Uint32(pkt[12:16])
+	srcPort := binary.BigEndian.Uint16(pkt[ihl : ihl+2])
 	dstPort := binary.BigEndian.Uint16(pkt[ihl+2 : ihl+4])
 	if dstPort != 443 {
 		u.sendPass(pkt, addr)
 		return
 	}
-
-	srcIP := binary.LittleEndian.Uint32(pkt[12:16])
-	srcPort := binary.BigEndian.Uint16(pkt[ihl : ihl+2])
 	entry, ok := u.resolver.LookupUDP(process.UDPFlow{LocalIP: srcIP, LocalPort: srcPort})
 	if !ok || !u.isWhitelisted(entry.Name) {
 		u.sendPass(pkt, addr)
 		return
 	}
-
-	// Intentionally do not reinject the packet. This is a narrow, process-aware
-	// QUIC block: only whitelisted applications lose UDP/443, while all other
-	// applications retain their normal UDP path.
+	// Do not reinject whitelisted UDP/443. This deliberately forces QUIC-aware
+	// clients onto TCP, where the existing whitelist transparent proxy applies.
 }
 
 func (u *UDPBlocker) isWhitelisted(name string) bool {
