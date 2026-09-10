@@ -1,0 +1,325 @@
+name: Prepare GoPass v1.6.6
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.5'
+          check-latest: false
+
+      - name: Apply v1.6.6 changes
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+import re
+from pathlib import Path
+
+
+def read(path):
+    return Path(path).read_text(encoding='utf-8')
+
+
+def write(path, text):
+    Path(path).write_text(text, encoding='utf-8', newline='')
+
+
+def replace_once(path, pattern, repl, label, flags=re.S):
+    text = read(path)
+    out, n = re.subn(pattern, repl, text, count=1, flags=flags)
+    if n != 1:
+        raise SystemExit(f'[{label}] expected 1 match, got {n} in {path}')
+    write(path, out)
+
+# Version string.
+replace_once('cmd/gopass/main.go', r'Version:\s+v1\.6\.5', 'Version: v1.6.6', 'version')
+
+# Config defaults and centralized safe buffer clamp: 32 KB .. 2 MB.
+replace_once(
+    'internal/config/config.go',
+    r'// ClampBufferSize.*?func ClampBufferSize\(size int\) int \{.*?\n\}',
+    '''// ClampBufferSize limits the TProxy userspace relay buffer to [32KB, 2MB].
+func ClampBufferSize(size int) int {
+    const minBufferSize = 32 * 1024
+    const maxBufferSize = 2 * 1024 * 1024
+    if size < minBufferSize {
+        return minBufferSize
+    }
+    if size > maxBufferSize {
+        return maxBufferSize
+    }
+    return size
+}''',
+    'clamp function'
+)
+replace_once('internal/config/config.go', r'BufferSize:\s+256 \* 1024,', 'BufferSize:      512 * 1024,', 'default buffer')
+
+# TProxy relay pool and runtime clamp.
+tp = read('internal/engine/tproxy.go')
+tp = tp.replace('// bufferPool holds 1MB buffers; handleConn slices them to the configured size.', '// bufferPool holds 2MB buffers; handleConn slices them to the configured size.')
+tp = tp.replace('return make([]byte, 1024*1024) // 1MB max', 'return make([]byte, 2*1024*1024) // 2MB max')
+tp, n = re.subn(r'\t// Clamp buffer size to \[4096, 1MB\]\n\tif bufSize < 4096 \{.*?\n\t\}', '\tbufSize = config.ClampBufferSize(bufSize)', tp, count=1, flags=re.S)
+if n != 1:
+    raise SystemExit('tproxy clamp block not found')
+write('internal/engine/tproxy.go', tp)
+
+# API: sanitize buffer and force Socket Buffer to OS auto-tuning (0).
+api = read('internal/api/api.go')
+old = '''\t\tif err := json.NewDecoder(r.Body).Decode(&perf); err == nil {
+\t\t\tif perf.BufferSize < 4096 {
+\t\t\t\tperf.BufferSize = 4096
+\t\t\t}
+\t\t\tif perf.BufferSize > 524288 {
+\t\t\t\tperf.BufferSize = 524288
+\t\t\t}'''
+new = '''\t\tif err := json.NewDecoder(r.Body).Decode(&perf); err == nil {
+\t\t\tperf.BufferSize = config.ClampBufferSize(perf.BufferSize)
+\t\t\t// Socket Buffer is intentionally not user-configurable in v1.6.6.
+\t\t\t// Zero keeps Windows TCP Auto-Tuning enabled.
+\t\t\tperf.TCPSocketBuffer = 0'''
+if old not in api:
+    raise SystemExit('performance API validation block not found')
+api = api.replace(old, new, 1)
+write('internal/api/api.go', api)
+
+# Tests: update expected defaults/bounds for v1.6.6.
+test = read('internal/config/config_test.go')
+test = test.replace('if c.Performance.BufferSize != 262144 {', 'if c.Performance.BufferSize != 512*1024 {', 1)
+test = test.replace('t.Errorf("默认 BufferSize = %d, want 262144", c.Performance.BufferSize)', 't.Errorf("默认 BufferSize = %d, want 524288", c.Performance.BufferSize)', 1)
+test = test.replace('''\t\t{4095, 4096, "4095 进入运行时后被限制到 4096"},
+\t\t{4096, 4096, "4096 合法"},
+\t\t{262144, 262144, "262144 合法"},
+\t\t{1048576, 1048576, "1048576 合法"},
+\t\t{1048577, 1048576, "1048577 被限制到 1048576"},
+\t\t{0, 4096, "0 被限制到 4096"},
+\t\t{-1, 4096, "负数被限制到 4096"},''', '''\t\t{32767, 32768, "低于 32KB 限制到 32KB"},
+\t\t{32768, 32768, "32KB 合法"},
+\t\t{256 * 1024, 256 * 1024, "256KB 合法"},
+\t\t{512 * 1024, 512 * 1024, "512KB 合法"},
+\t\t{1024 * 1024, 1024 * 1024, "1MB 合法"},
+\t\t{2 * 1024 * 1024, 2 * 1024 * 1024, "2MB 合法"},
+\t\t{2*1024*1024 + 1, 2 * 1024 * 1024, "超过 2MB 限制到 2MB"},
+\t\t{0, 32768, "0 限制到 32KB"},
+\t\t{-1, 32768, "负数限制到 32KB"},''', 1)
+write('internal/config/config_test.go', test)
+
+# Example config default.
+example = read('config.example.json')
+example = example.replace('"buffer_size": 32768', '"buffer_size": 524288', 1)
+write('config.example.json', example)
+
+# Web UI: replace the entire Performance Tuning section with a user-safe TProxy-only UI.
+web = read('web/index.html')
+web = web.replace('GoPass <span style="font-size:12px;opacity:0.6;font-weight:normal">v1.6.5</span>', 'GoPass <span style="font-size:12px;opacity:0.6;font-weight:normal">v1.6.6</span>', 1)
+start = web.find('                <h3>⚡ Performance Tuning</h3>')
+end = web.find('                <hr style="border:none; border-top:1px solid rgba(255,50,50,0.3);', start)
+if start < 0 or end < 0:
+    raise SystemExit('performance UI section boundaries not found')
+new_section = '''                <h3>⚡ 转发性能</h3>
+                <p style="color:#a1a1aa; margin-bottom: 20px;">调整 GoPass 用户态 TProxy 转发缓冲区。设置立即对新连接生效。</p>
+
+                <div style="display:grid; gap: 18px;">
+                    <div style="display:flex; gap: 10px; align-items: center; flex-wrap:wrap;">
+                        <label style="color:var(--text-secondary); width:180px;">TProxy Buffer</label>
+                        <select id="perf-buffer-preset"
+                            style="padding:10px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color:white; border-radius:4px; width:150px;">
+                            <option value="32768">32 KB</option>
+                            <option value="262144">256 KB</option>
+                            <option value="524288">512 KB（推荐）</option>
+                            <option value="1048576">1 MB</option>
+                            <option value="2097152">2 MB</option>
+                            <option value="custom">自定义</option>
+                        </select>
+                        <input type="number" id="perf-buffer-custom-kb" min="32" max="2048" step="4" disabled
+                            style="padding:10px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color:white; border-radius:4px; width:120px;">
+                        <span style="color:#a1a1aa; font-size:12px;">32 KB – 2048 KB（2 MB）</span>
+                    </div>
+
+                    <div style="padding:12px; background:rgba(0,0,0,0.16); border:1px solid rgba(255,255,255,0.08); border-radius:6px; color:#a1a1aa; font-size:12px;">
+                        <div style="margin-bottom:6px;"><strong style="color:#fff;">TCP Socket Buffer：</strong>自动（Windows TCP Auto-Tuning）</div>
+                        <div><strong style="color:#fff;">其他 TCP 参数：</strong>使用 GoPass 稳定默认值，不在普通设置中开放。</div>
+                    </div>
+                </div>
+
+                <div style="margin-top: 24px; display: flex; gap: 15px; align-items: center;">
+                    <button id="save-perf-btn"
+                        style="padding: 10px 20px; background: #7c3aed; border:none; color:white; border-radius:4px; cursor:pointer;">💾
+                        保存转发性能</button>
+                    <span id="perf-save-msg" style="color: #238636; line-height: 38px; display: none;">✅ 已应用</span>
+                </div>
+
+'''
+web = web[:start] + new_section + web[end:]
+# Replace the inline performance loader/saver script with a minimal safe version.
+script_start = web.find('        async function loadPerformSettings() {')
+script_end = web.find('    </script>', script_start)
+if script_start < 0 or script_end < 0:
+    raise SystemExit('performance JS block not found')
+new_script = '''        const PERF_MIN = 32 * 1024;
+        const PERF_MAX = 2 * 1024 * 1024;
+        const PERF_DEFAULT = 512 * 1024;
+        const PERF_PRESETS = [32 * 1024, 256 * 1024, 512 * 1024, 1024 * 1024, 2 * 1024 * 1024];
+
+        function clampPerfBuffer(value) {
+            const n = Number(value);
+            if (!Number.isFinite(n)) return PERF_DEFAULT;
+            return Math.min(PERF_MAX, Math.max(PERF_MIN, Math.trunc(n)));
+        }
+
+        function setPerfBufferValue(value) {
+            const size = clampPerfBuffer(value);
+            const preset = document.getElementById('perf-buffer-preset');
+            const custom = document.getElementById('perf-buffer-custom-kb');
+            if (PERF_PRESETS.includes(size)) {
+                preset.value = String(size);
+                custom.value = String(Math.round(size / 1024));
+                custom.disabled = true;
+            } else {
+                preset.value = 'custom';
+                custom.value = String(Math.round(size / 1024));
+                custom.disabled = false;
+            }
+        }
+
+        function getPerfBufferValue() {
+            const preset = document.getElementById('perf-buffer-preset').value;
+            if (preset !== 'custom') return clampPerfBuffer(Number(preset));
+            const kb = Number(document.getElementById('perf-buffer-custom-kb').value);
+            if (!Number.isInteger(kb) || kb < 32 || kb > 2048) return null;
+            return kb * 1024;
+        }
+
+        async function loadPerformSettings() {
+            try {
+                const r = await fetch('/api/performance');
+                if (!r.ok) return;
+                const d = await r.json();
+                setPerfBufferValue(d.buffer_size || PERF_DEFAULT);
+            } catch (e) { console.error('perf load err', e); }
+        }
+
+        document.getElementById('perf-buffer-preset').addEventListener('change', (e) => {
+            const custom = document.getElementById('perf-buffer-custom-kb');
+            if (e.target.value === 'custom') {
+                custom.disabled = false;
+                custom.focus();
+            } else {
+                custom.value = String(Math.round(Number(e.target.value) / 1024));
+                custom.disabled = true;
+            }
+        });
+
+        document.getElementById('perf-buffer-custom-kb').addEventListener('input', (e) => {
+            let value = Number(e.target.value);
+            if (Number.isFinite(value)) {
+                value = Math.trunc(value);
+                if (value > 2048) e.target.value = '2048';
+                if (value < 32 && e.target.value !== '') e.target.value = String(Math.max(32, value));
+            }
+        });
+
+        document.getElementById('save-perf-btn').addEventListener('click', async () => {
+            const bufferSize = getPerfBufferValue();
+            if (bufferSize === null) {
+                alert('TProxy Buffer 必须在 32 KB 到 2 MB 之间。');
+                return;
+            }
+            const p = {
+                buffer_size: bufferSize,
+                tcp_nodelay: true,
+                tcp_socket_buffer: 0,
+                bidirectional_wait: true,
+                tcp_keep_alive: true,
+                keep_alive_period: 15,
+                tcp_linger: -1
+            };
+            try {
+                const r = await fetch('/api/performance', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p) });
+                if (r.ok) {
+                    const m = document.getElementById('perf-save-msg');
+                    m.style.display = 'inline';
+                    setTimeout(() => m.style.display = 'none', 3000);
+                } else {
+                    const text = await r.text();
+                    alert(text || '保存性能设置失败');
+                }
+            } catch (e) {
+                console.error('perf save err', e);
+                alert('保存性能设置失败');
+            }
+        });
+
+        setPerfBufferValue(PERF_DEFAULT);
+        const nSet = document.getElementById('nav-settings');
+        if (nSet) nSet.addEventListener('click', loadPerformSettings);
+        if (window.location.hash === '#settings') loadPerformSettings();
+'''
+web = web[:script_start] + new_script + web[script_end:]
+write('web/index.html', web)
+
+# README release notes.
+readme = read('README.md')
+if '### v1.6.6' not in readme:
+    marker = '## 📝 Release Notes'
+    if marker in readme:
+        note = '''## 📝 Release Notes\n\n### v1.6.6\n- **TProxy Buffer 默认值**：512 KB。\n- **TProxy Buffer 可调范围**：32 KB–2 MB，支持 32 KB、256 KB、512 KB、1 MB、2 MB 预设及自定义。\n- **Socket Buffer**：固定为 0，交给 Windows TCP Auto-Tuning 管理，不再向普通用户开放。\n- **设置收敛**：普通 Web UI 不再暴露容易误调的底层 TCP 参数，保持稳定默认值。\n- **安全校验**：前端与 API 双重限制 TProxy Buffer，不允许低于 32 KB 或高于 2 MB。\n\n'''
+        readme = readme.replace(marker, note, 1)
+    else:
+        readme += '\n\n### v1.6.6\n- TProxy Buffer 默认 512 KB，范围 32 KB–2 MB。\n- Socket Buffer 固定 0，使用 Windows TCP Auto-Tuning。\n'
+write('README.md', readme)
+
+# Make release workflow version-aware.
+release = read('.github/workflows/release.yml')
+release = release.replace('gopass_1.6.5.exe', 'gopass_${{ github.ref_name }}.exe')
+release = release.replace('GoPass v1.6.5', 'GoPass ${{ github.ref_name }}')
+write('.github/workflows/release.yml', release)
+
+# Remove the temporary anchor created before this workflow was prepared.
+anchor = Path('.gopass-v1.6.6-anchor')
+if anchor.exists():
+    anchor.unlink()
+
+print('v1.6.6 patch complete')
+'@ | Set-Content -Encoding UTF8 patch_v166.py
+          python patch_v166.py
+          gofmt -w cmd/gopass/main.go internal/config/config.go internal/api/api.go internal/engine/tproxy.go internal/config/config_test.go
+          git diff --check
+
+      - name: Test and build
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          go test -v ./...
+          go test -race ./...
+          go vet ./...
+          $env:GOOS = 'windows'
+          $env:GOARCH = 'amd64'
+          go build -ldflags='-s -w' -o gopass-v1.6.6.exe ./cmd/gopass
+          if (-not (Test-Path gopass-v1.6.6.exe)) { throw 'Windows build failed' }
+          Get-Item gopass-v1.6.6.exe | Select-Object Name,Length
+
+      - name: Commit v1.6.6
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add README.md cmd/gopass/main.go internal/config/config.go internal/config/config_test.go internal/api/api.go internal/engine/tproxy.go config.example.json web/index.html .github/workflows/release.yml
+          git commit -m 'release: GoPass v1.6.6'
+          git push origin main
+          git tag -a v1.6.6 -m 'GoPass v1.6.6'
+          git push origin v1.6.6
