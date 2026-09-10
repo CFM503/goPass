@@ -13,7 +13,7 @@ import (
 	"github.com/CFM503/goPass/internal/version"
 )
 
-type Engine struct{cfg *config.Config;cfgMu sync.RWMutex;tracker *ConnTrack; tproxy *TProxy;interceptor *Interceptor;Stats *Stats}
+type Engine struct{cfg *config.Config;cfgMu sync.RWMutex;tracker *ConnTracker;tproxy *TProxy;interceptor *Interceptor;Stats *Stats}
 type Stats struct{PID int;Connections int;RxBytes int64;TxBytes int64;mu sync.RWMutex;active map[string]map[string]interface{}}
 type ProcessStatus struct{Process string `json:"process"`;PID uint32 `json:"pid"`;Status string `json:"status"`;Connections int `json:"connections"`;Targets []string `json:"targets"`}
 func(s *Stats)AddActiveConn(info map[string]interface{}){id,_:=info["id"].(string);s.mu.Lock();if s.active==nil{s.active=make(map[string]map[string]interface{})};if _,ok:=s.active[id];!ok{s.Connections++};s.active[id]=info;s.mu.Unlock()}
