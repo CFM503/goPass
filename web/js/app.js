@@ -1,6 +1,6 @@
 let uiConnLimit=20, pollTimer=null;
 function $(id){return document.getElementById(id)}
-function esc(v){return String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c))}
+function esc(v){return String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]||''))}
 function init(){bindNav();bindActions();loadSettings();loadUpstream();loadPerformance();loadProcesses();refreshStatus();pollTimer=setInterval(refreshStatus,2000)}
 function bindNav(){const views={status:'view-status',processes:'view-processes',settings:'view-settings'},nav={status:'nav-status',processes:'nav-processes',settings:'nav-settings'};for(const k of Object.keys(nav))$(nav[k])?.addEventListener('click',e=>{e.preventDefault();for(const x of Object.keys(nav)){$(nav[x])?.classList.toggle('active',x===k);$(views[x]).style.display=x===k?'block':'none'};$('page-title').textContent=k==='status'?'代理 / 直连状态':k==='processes'?'进程白名单':'设置';if(k==='processes')loadProcesses();if(k==='settings'){loadUpstream();loadPerformance()}history.replaceState(null,'',`#${k}`)})}
 function bindActions(){$('add-process-btn')?.addEventListener('click',addProcess);$('process-input')?.addEventListener('keydown',e=>{if(e.key==='Enter')addProcess()});$('save-settings-btn')?.addEventListener('click',saveSettings)}
