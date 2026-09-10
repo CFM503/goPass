@@ -11,6 +11,7 @@ import (
 	"github.com/CFM503/goPass/internal/api"
 	"github.com/CFM503/goPass/internal/config"
 	"github.com/CFM503/goPass/internal/engine"
+	"github.com/CFM503/goPass/internal/version"
 )
 
 func main() {
@@ -18,7 +19,7 @@ func main() {
 	flag.Parse()
 
 	fmt.Println("=== GoPass 透明代理 ===")
-	fmt.Println("Version: v1.6.7")
+	fmt.Printf("Version: %s\n", version.Version)
 	fmt.Printf("PID: %d\n\n", os.Getpid())
 
 	engine.CleanUpDependencies()
