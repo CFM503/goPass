@@ -18,15 +18,18 @@ function getDOM() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-    const rulesNav = document.getElementById('nav-rules');
-    const rulesView = document.getElementById('view-rules');
-    if (rulesNav) rulesNav.style.display = 'none';
-    if (rulesView) rulesView.style.display = 'none';
-
     connectWS();
     loadSettings();
     loadUpstream();
-
+    loadPerformance();
+    const dashboard = document.getElementById('nav-dashboard');
+    const settings = document.getElementById('nav-settings');
+    const dashboardView = document.getElementById('view-dashboard');
+    const settingsView = document.getElementById('view-settings');
+    if (dashboard && settings && dashboardView && settingsView) {
+        dashboard.addEventListener('click', e => { e.preventDefault(); dashboard.classList.add('active'); settings.classList.remove('active'); dashboardView.style.display='block'; settingsView.style.display='none'; });
+        settings.addEventListener('click', e => { e.preventDefault(); settings.classList.add('active'); dashboard.classList.remove('active'); dashboardView.style.display='none'; settingsView.style.display='block'; });
+    }
     const saveButton = document.getElementById('save-settings-btn');
     if (saveButton) saveButton.addEventListener('click', saveSettings);
 });
@@ -43,14 +46,9 @@ function connectWS() {
             if (dom.rxBytes) dom.rxBytes.innerText = data.rx || '0 B/s';
             if (dom.txBytes) dom.txBytes.innerText = data.tx || '0 B/s';
             renderConnections(Array.isArray(data.active) ? data.active : [], dom);
-        } catch (err) {
-            console.error('invalid websocket message', err);
-        }
+        } catch (err) { console.error('invalid websocket message', err); }
     };
-    socket.onclose = () => {
-        setEngineStatus(false);
-        setTimeout(connectWS, 3000);
-    };
+    socket.onclose = () => { setEngineStatus(false); setTimeout(connectWS, 3000); };
     socket.onerror = () => socket.close();
 }
 
@@ -68,7 +66,6 @@ function renderConnections(conns, dom = getDOM()) {
     for (let i = 0; i < hashInput.length; i++) hash = ((hash << 5) - hash + hashInput.charCodeAt(i)) | 0;
     if (hash === lastConnHash && visible.length === conns.length) return;
     lastConnHash = hash;
-
     if (dom.proxyTitle) dom.proxyTitle.innerText = `Proxied Connections (Top ${uiConnLimit})`;
     if (dom.proxyBody) {
         dom.proxyBody.innerHTML = visible.length
@@ -76,40 +73,39 @@ function renderConnections(conns, dom = getDOM()) {
             : '<tr><td colspan="3">No active proxied connections.</td></tr>';
     }
     if (dom.directTitle) dom.directTitle.innerText = 'Direct Connections (disabled)';
-    if (dom.directBody) dom.directBody.innerHTML = '<tr><td colspan="3">GoPass v1.6.7 does not perform direct/split routing.</td></tr>';
+    if (dom.directBody) dom.directBody.innerHTML = '<tr><td colspan="3">Direct/split routing is disabled in GoPass v1.6.7.</td></tr>';
 }
 
-function escapeHtml(value) {
-    return String(value).replace(/[&<>'"]/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[ch]));
-}
+function escapeHtml(value) { return String(value).replace(/[&<>'"]/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[ch])); }
 
 function loadSettings() {
-    fetch('/api/settings')
-        .then(checkResponse)
-        .then(data => {
-            const ws = document.getElementById('ws-interval');
-            const limit = document.getElementById('ui-conn-limit');
-            if (ws && Number.isFinite(data.ws_refresh_interval)) ws.value = data.ws_refresh_interval;
-            if (limit && Number.isFinite(data.ui_conn_limit)) {
-                limit.value = data.ui_conn_limit;
-                uiConnLimit = Math.max(1, Number(data.ui_conn_limit));
-            }
-        })
-        .catch(console.error);
+    fetch('/api/settings').then(checkResponse).then(data => {
+        const ws = document.getElementById('ws-interval');
+        const limit = document.getElementById('ui-conn-limit');
+        if (ws && Number.isFinite(data.ws_refresh_interval)) ws.value = data.ws_refresh_interval;
+        if (limit && Number.isFinite(data.ui_conn_limit)) { limit.value = data.ui_conn_limit; uiConnLimit = Math.max(1, Number(data.ui_conn_limit)); }
+    }).catch(console.error);
 }
 
 function loadUpstream() {
-    fetch('/api/upstream')
-        .then(checkResponse)
-        .then(data => {
-            const type = document.getElementById('upstream-type');
-            const addr = document.getElementById('upstream-addr');
-            const port = document.getElementById('upstream-port');
-            if (type && data.type) type.value = data.type;
-            if (addr && data.address) addr.value = data.address;
-            if (port && data.port) port.value = data.port;
-        })
-        .catch(console.error);
+    fetch('/api/upstream').then(checkResponse).then(data => {
+        const type = document.getElementById('upstream-type');
+        const addr = document.getElementById('upstream-addr');
+        const port = document.getElementById('upstream-port');
+        if (type && data.type) type.value = data.type;
+        if (addr && data.address) addr.value = data.address;
+        if (port && data.port) port.value = data.port;
+    }).catch(console.error);
+}
+
+function loadPerformance() {
+    fetch('/api/performance').then(checkResponse).then(data => {
+        const select = document.getElementById('relay-buffer-size');
+        if (select && Number.isFinite(data.buffer_size)) {
+            const value = Math.min(1048576, Math.max(32768, Number(data.buffer_size)));
+            select.value = String(value);
+        }
+    }).catch(console.error);
 }
 
 async function saveSettings() {
@@ -120,50 +116,34 @@ async function saveSettings() {
     const typeInput = document.getElementById('upstream-type');
     const addrInput = document.getElementById('upstream-addr');
     const portInput = document.getElementById('upstream-port');
+    const bufferInput = document.getElementById('relay-buffer-size');
 
     let wsInterval = Number.parseInt(wsInput?.value || '5', 10);
     let connLimit = Number.parseInt(limitInput?.value || '20', 10);
     const type = typeInput?.value || 'socks5';
     const address = (addrInput?.value || '').trim();
     const port = Number.parseInt(portInput?.value || '0', 10);
+    const bufferSize = Number.parseInt(bufferInput?.value || '262144', 10);
     if (!Number.isFinite(wsInterval) || wsInterval < 1) wsInterval = 5;
     if (!Number.isFinite(connLimit) || connLimit < 1) connLimit = 20;
-    if (!address || !Number.isInteger(port) || port < 1 || port > 65535) {
-        alert('Please enter a valid upstream address and port.');
-        return;
-    }
+    if (!Number.isFinite(bufferSize) || bufferSize < 32768 || bufferSize > 1048576) { alert('Relay buffer must be between 32 KB and 1 MB.'); return; }
+    if (!address || !Number.isInteger(port) || port < 1 || port > 65535) { alert('Please enter a valid upstream address and port.'); return; }
 
     if (btn) btn.innerText = 'Saving...';
     try {
-        const [settingsRes, upstreamRes] = await Promise.all([
+        const [settingsRes, upstreamRes, perfRes] = await Promise.all([
             fetch('/api/settings', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ ws_refresh_interval:wsInterval, ui_conn_limit:connLimit }) }),
-            fetch('/api/upstream', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ type, address, port }) })
+            fetch('/api/upstream', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ type, address, port }) }),
+            fetch('/api/performance', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ buffer_size:bufferSize, tcp_nodelay:true, tcp_keep_alive:true, keep_alive_period:15, tcp_linger:-1 }) })
         ]);
         const settings = await settingsRes.json();
         const upstream = await upstreamRes.json();
-        if (settings.status !== 'ok' || upstream.status !== 'ok') throw new Error('save failed');
+        const perf = await perfRes.json();
+        if (settings.status !== 'ok' || upstream.status !== 'ok' || perf.status !== 'ok') throw new Error('save failed');
         uiConnLimit = connLimit;
         if (msg) { msg.style.display='inline-block'; setTimeout(() => { msg.style.display='none'; }, 3000); }
-    } catch (err) {
-        console.error(err);
-        alert('Failed to save settings.');
-    } finally {
-        if (btn) btn.innerText = 'Save Settings';
-    }
+    } catch (err) { console.error(err); alert('Failed to save settings.'); }
+    finally { if (btn) btn.innerText = 'Save Settings'; }
 }
 
-function checkResponse(res) {
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.json();
-}
-
-async function loadStatus() {
-    try {
-        const data = await fetch('/api/status').then(checkResponse);
-        const dom = getDOM();
-        if (dom.sysPid) dom.sysPid.innerText = data.pid ?? 0;
-        if (dom.connCount) dom.connCount.innerText = data.connections ?? 0;
-    } catch (err) {
-        console.error(err);
-    }
-}
+function checkResponse(res) { if (!res.ok) throw new Error(`HTTP ${res.status}`); return res.json(); }
