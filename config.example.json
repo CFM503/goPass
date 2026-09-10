@@ -1,8 +1,8 @@
 {
   "api": {
     "listen_addr": "127.0.0.1:8080",
-    "ws_refresh_interval": 5,
-    "ui_conn_limit": 20
+    "ws_refresh_interval": 2,
+    "ui_conn_limit": 50
   },
   "outbounds": {
     "servers": [
@@ -14,18 +14,11 @@
     "BigEyesTV.exe"
   ],
   "performance": {
-    "buffer_size": 262144,
-    "tcp_nodelay": true,
-    "tcp_keep_alive": true,
-    "keep_alive_period": 15,
-    "tcp_linger": -1
+    "buffer_size": 262144
   },
   "system": {
     "tproxy_port": 7893,
     "conn_track_gc_interval": 15,
     "conn_track_ttl": 30
-  },
-  "automatic_route": {
-    "enabled": false
   }
 }
