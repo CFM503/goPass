@@ -93,10 +93,10 @@ jobs:
             - Process-whitelist transparent IPv4 TCP interception
             - Only whitelisted applications use the configured upstream SOCKS5/HTTP proxy
             - Non-whitelisted applications remain on the normal Windows direct path
-            - Minimal Web UI: status, process whitelist, upstream settings
+            - Minimal Web UI: status, process whitelist, upstream settings, TProxy Buffer Size
             - Live process panel shows proxy/direct status, PID, connection count and target IP:port
+            - TProxy Buffer Size: 32 KB–1 MB, default 256 KB
             - No GeoIP/GeoSite, DNS relay/Fake-IP, SNI, UDP/QUIC, automatic routing or route probing
-            - Relay buffer is fixed internally at 256 KB
           files: |
             gopass_1.6.8.exe
         env:
