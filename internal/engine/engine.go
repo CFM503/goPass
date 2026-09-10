@@ -3,7 +3,9 @@ package engine
 import (
 	"fmt"
 	"log"
+	"net"
 	"os"
+	"strconv"
 	"sync"
 
 	"github.com/CFM503/goPass/internal/config"
@@ -61,11 +63,7 @@ func (s *Stats) GetActive() []map[string]interface{} {
 
 func New(cfg *config.Config) (*Engine, error) {
 	stats := &Stats{PID: os.Getpid(), active: make(map[string]map[string]interface{})}
-	eng := &Engine{
-		cfg:     cfg,
-		tracker: NewConnTracker(cfg.System.ConnTrackGCInterval, cfg.System.ConnTrackTTL),
-		Stats:   stats,
-	}
+	eng := &Engine{cfg: cfg, tracker: NewConnTracker(cfg.System.ConnTrackGCInterval, cfg.System.ConnTrackTTL), Stats: stats}
 	eng.controller = controller.NewRouteController(cfg.AutomaticRoute, func(r *controller.Route) {
 		eng.UpdateUpstream(r.Protocol, r.Address, r.Port, "")
 	})
@@ -76,33 +74,27 @@ func (e *Engine) Controller() *controller.RouteController { return e.controller 
 
 func (e *Engine) Start() error {
 	log.Printf("[Engine] GoPass v1.6.7 starting, PID=%d", e.Stats.PID)
-
 	proxyAddr, proxyType := "", ""
 	for _, srv := range e.cfg.Outbounds.Servers {
 		if srv.Type == "socks5" || srv.Type == "http" {
-			proxyAddr = fmt.Sprintf("%s:%d", srv.Address, srv.Port)
-			proxyType = srv.Type
+			proxyAddr, proxyType = fmt.Sprintf("%s:%d", srv.Address, srv.Port), srv.Type
 			break
 		}
 	}
 	if proxyAddr == "" { return fmt.Errorf("no socks5 or http upstream configured") }
-
 	proxyHost, proxyPort, err := parseAddr(proxyAddr)
 	if err != nil { return fmt.Errorf("invalid upstream address: %w", err) }
-
 	tproxy, err := NewTProxy(e.tracker, proxyType, proxyAddr, e.Stats, e.cfg.Performance, e.cfg.System.TProxyPort)
 	if err != nil { return fmt.Errorf("TProxy start failed: %w", err) }
 	e.tproxy = tproxy
 	go tproxy.Accept()
-
-	interceptor := NewInterceptor(e.tracker, proxyHost, uint16(proxyPort), uint16(e.cfg.System.TProxyPort), e.Stats)
+	interceptor := NewInterceptor(e.tracker, proxyHost, uint16(proxyPort), uint16(e.cfg.System.TProxyPort))
 	e.interceptor = interceptor
 	go interceptor.Start()
-
 	if e.controller != nil {
 		if err := e.controller.Start(); err != nil { log.Printf("[Engine] route controller start error: %v", err) }
 	}
-	log.Printf("[Engine] ready: upstream=%s://%s tproxy=%d", proxyType, proxyAddr, e.cfg.System.TProxyPort)
+	log.Printf("[Engine] ready: upstream=%s tproxy=%d", proxyAddr, e.cfg.System.TProxyPort)
 	return nil
 }
 
@@ -118,15 +110,11 @@ func (e *Engine) UpdateUpstream(pType, addr string, port int, saveFile string) {
 	if len(e.cfg.Outbounds.Servers) == 0 {
 		e.cfg.Outbounds.Servers = append(e.cfg.Outbounds.Servers, config.Server{Tag: "proxy", Type: pType, Address: addr, Port: port})
 	} else {
-		e.cfg.Outbounds.Servers[0].Type = pType
-		e.cfg.Outbounds.Servers[0].Address = addr
-		e.cfg.Outbounds.Servers[0].Port = port
+		e.cfg.Outbounds.Servers[0].Type, e.cfg.Outbounds.Servers[0].Address, e.cfg.Outbounds.Servers[0].Port = pType, addr, port
 	}
 	e.cfgMu.Unlock()
-
 	if e.tproxy != nil { e.tproxy.UpdateUpstream(pType, newAddr) }
 	if e.interceptor != nil { e.interceptor.SetProxyAddr(addr, uint16(port)) }
-
 	if saveFile != "" {
 		e.cfgMu.RLock(); err := e.cfg.Save(saveFile); e.cfgMu.RUnlock()
 		if err != nil { log.Printf("[Engine] save config failed: %v", err) }
@@ -136,10 +124,7 @@ func (e *Engine) UpdateUpstream(pType, addr string, port int, saveFile string) {
 func (e *Engine) UpdateUIConfig(wsInterval, connLimit int) {
 	if wsInterval < 1 { wsInterval = 5 }
 	if connLimit < 1 { connLimit = 20 }
-	e.cfgMu.Lock()
-	e.cfg.API.WSRefreshInterval = wsInterval
-	e.cfg.API.UIConnLimit = connLimit
-	e.cfgMu.Unlock()
+	e.cfgMu.Lock(); e.cfg.API.WSRefreshInterval, e.cfg.API.UIConnLimit = wsInterval, connLimit; e.cfgMu.Unlock()
 }
 
 func (e *Engine) ResetConfig(configPath string) error {
@@ -160,18 +145,14 @@ func (e *Engine) ResetConfig(configPath string) error {
 }
 
 func (e *Engine) GetConfig() *config.Config {
-	e.cfgMu.RLock()
-	defer e.cfgMu.RUnlock()
+	e.cfgMu.RLock(); defer e.cfgMu.RUnlock()
 	clone := *e.cfg
 	clone.Outbounds.Servers = append([]config.Server(nil), e.cfg.Outbounds.Servers...)
 	clone.AutomaticRoute.Routes = append([]config.RouteConfig(nil), e.cfg.AutomaticRoute.Routes...)
 	return &clone
 }
 
-func (e *Engine) SaveConfig(path string) error {
-	e.cfgMu.RLock(); defer e.cfgMu.RUnlock()
-	return e.cfg.Save(path)
-}
+func (e *Engine) SaveConfig(path string) error { e.cfgMu.RLock(); defer e.cfgMu.RUnlock(); return e.cfg.Save(path) }
 
 func (e *Engine) Stop() {
 	if e.controller != nil { e.controller.Stop() }
