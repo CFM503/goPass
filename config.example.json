@@ -9,6 +9,10 @@
       { "tag": "proxy", "type": "socks5", "address": "127.0.0.1", "port": 9192 }
     ]
   },
+  "process_whitelist": [
+    "chrome.exe",
+    "BigEyesTV.exe"
+  ],
   "performance": {
     "buffer_size": 262144,
     "tcp_nodelay": true,
@@ -22,25 +26,6 @@
     "conn_track_ttl": 30
   },
   "automatic_route": {
-    "enabled": false,
-    "check_interval": 5,
-    "standby_check_interval": 30,
-    "recover_check_interval": 120,
-    "switch_threshold": 5,
-    "switch_cooldown": 60,
-    "minimum_stable_time": 30,
-    "failure_threshold": 3,
-    "recovery_threshold": 3,
-    "peak_mode": "auto",
-    "peak_start_hour": 18,
-    "peak_end_hour": 23,
-    "history_window": 60,
-    "standby_count": 3,
-    "max_probe_concurrency": 4,
-    "history_file": "routes_history.json",
-    "history_save_interval": 300,
-    "routes": [
-      { "id": "goway-default", "name": "GOWAY Default", "address": "127.0.0.1", "port": 9192, "protocol": "socks5", "type": "goway" }
-    ]
+    "enabled": false
   }
 }
