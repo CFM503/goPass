@@ -36,9 +36,9 @@ type APIConfig struct {
 }
 
 type SystemConfig struct {
-	TProxyPort         int `json:"tproxy_port"`
+	TProxyPort          int `json:"tproxy_port"`
 	ConnTrackGCInterval int `json:"conn_track_gc_interval"`
-	ConnTrackTTL       int `json:"conn_track_ttl"`
+	ConnTrackTTL        int `json:"conn_track_ttl"`
 }
 
 type OutboundConfig struct {
@@ -58,7 +58,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		API: APIConfig{ListenAddr: "127.0.0.1:8080", WSRefreshInterval: 2, UIConnLimit: 50},
 		Outbounds: OutboundConfig{Servers: []Server{{Tag: "proxy", Type: "socks5", Address: "127.0.0.1", Port: 9192}}},
-		Performance: PerformanceConfig{BufferSize: 256 * 1024},
+		Performance: PerformanceConfig{BufferSize: 64 * 1024},
 		System: SystemConfig{TProxyPort: 7893, ConnTrackGCInterval: 15, ConnTrackTTL: 30},
 		ProcessWhitelist: []string{},
 	}
