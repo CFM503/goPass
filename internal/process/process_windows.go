@@ -26,21 +26,34 @@ type Entry struct {
 	Name string
 }
 
+type UDPFlow struct {
+	LocalIP   uint32
+	LocalPort uint16
+}
+
+type UDPEntry struct {
+	Flow UDPFlow
+	PID  uint32
+	Name string
+}
+
 type pidCacheEntry struct {
 	name      string
 	checkedAt time.Time
 }
 
 type Resolver struct {
-	mu       sync.RWMutex
-	flows    map[Flow]Entry
-	pidCache map[uint32]pidCacheEntry
+	mu        sync.RWMutex
+	flows     map[Flow]Entry
+	udpFlows  map[UDPFlow]UDPEntry
+	pidCache  map[uint32]pidCacheEntry
 	fallbackMu sync.Mutex
 }
 
 var (
 	iphlpapi            = windows.NewLazySystemDLL("iphlpapi.dll")
 	getExtendedTCPTable = iphlpapi.NewProc("GetExtendedTcpTable")
+	getExtendedUDPTable = iphlpapi.NewProc("GetExtendedUdpTable")
 	kernel32            = windows.NewLazySystemDLL("kernel32.dll")
 	openProcess         = kernel32.NewProc("OpenProcess")
 	closeHandle         = kernel32.NewProc("CloseHandle")
@@ -50,6 +63,7 @@ var (
 const (
 	afInet                  = 2
 	tcpTableOwnerPidAll     = 5
+	udpTableOwnerPid        = 1
 	processQueryLimitedInfo = 0x1000
 	pidNameCacheTTL         = 2 * time.Second
 )
@@ -57,11 +71,21 @@ const (
 func NewResolver() *Resolver {
 	return &Resolver{
 		flows:    make(map[Flow]Entry),
+		udpFlows: make(map[UDPFlow]UDPEntry),
 		pidCache: make(map[uint32]pidCacheEntry),
 	}
 }
 
 func (r *Resolver) Refresh() error {
+	tcpErr := r.refreshTCP()
+	// UDP is intentionally refreshed together with the existing 250ms TCP
+	// snapshot. This keeps UDP/443 process lookup O(1) in the packet hot path
+	// without adding a second timer or per-packet Windows table syscall.
+	_ = r.refreshUDP()
+	return tcpErr
+}
+
+func (r *Resolver) refreshTCP() error {
 	size := uint32(0)
 	ret, _, _ := getExtendedTCPTable.Call(0, uintptr(unsafe.Pointer(&size)), 0, afInet, tcpTableOwnerPidAll, 0)
 	if ret != 0 && size == 0 {
@@ -116,6 +140,57 @@ func (r *Resolver) Refresh() error {
 	return nil
 }
 
+func (r *Resolver) refreshUDP() error {
+	size := uint32(0)
+	ret, _, _ := getExtendedUDPTable.Call(0, uintptr(unsafe.Pointer(&size)), 0, afInet, udpTableOwnerPid, 0)
+	if ret != 0 && size == 0 {
+		return fmt.Errorf("GetExtendedUdpTable size failed: %d", ret)
+	}
+	if size == 0 {
+		r.mu.Lock()
+		r.udpFlows = make(map[UDPFlow]UDPEntry)
+		r.mu.Unlock()
+		return nil
+	}
+	buf := make([]byte, size)
+	ret, _, err := getExtendedUDPTable.Call(uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&size)), 0, afInet, udpTableOwnerPid, 0)
+	if ret != 0 {
+		return fmt.Errorf("GetExtendedUdpTable failed: %v", err)
+	}
+	count := *(*uint32)(unsafe.Pointer(&buf[0]))
+	rowSize := uint32(12)
+	now := time.Now()
+	flows := make(map[UDPFlow]UDPEntry, count)
+	seenPIDs := make(map[uint32]struct{})
+
+	for idx := uint32(0); idx < count; idx++ {
+		off := 4 + idx*rowSize
+		if off+rowSize > uint32(len(buf)) {
+			break
+		}
+		row := buf[off : off+rowSize]
+		localIP := *(*uint32)(unsafe.Pointer(&row[0]))
+		localPort := ntohs(uint16(*(*uint32)(unsafe.Pointer(&row[4]))))
+		pid := *(*uint32)(unsafe.Pointer(&row[8]))
+		seenPIDs[pid] = struct{}{}
+		name := r.cachedProcessName(pid, now)
+		flow := UDPFlow{LocalIP: localIP, LocalPort: localPort}
+		flows[flow] = UDPEntry{Flow: flow, PID: pid, Name: name}
+	}
+
+	r.mu.Lock()
+	for pid := range r.pidCache {
+		if _, ok := seenPIDs[pid]; !ok {
+			// Keep PID entries that are still present in TCP as well. The TCP
+			// refresh owns the final cleanup when it sees a PID disappear.
+			continue
+		}
+	}
+	r.udpFlows = flows
+	r.mu.Unlock()
+	return nil
+}
+
 func (r *Resolver) cachedProcessName(pid uint32, now time.Time) string {
 	if pid == 0 {
 		return ""
@@ -140,12 +215,20 @@ func (r *Resolver) Lookup(flow Flow) (Entry, bool) {
 	return e, ok
 }
 
+func (r *Resolver) LookupUDP(flow UDPFlow) (UDPEntry, bool) {
+	r.mu.RLock()
+	e, ok := r.udpFlows[flow]
+	if !ok && flow.LocalIP != 0 {
+		e, ok = r.udpFlows[UDPFlow{LocalIP: 0, LocalPort: flow.LocalPort}]
+	}
+	r.mu.RUnlock()
+	return e, ok
+}
+
 // LookupWithRefresh restores the v1.6.3 startup/new-connection fallback.
 // The background refresh normally makes Lookup a cheap O(1) operation, but a
 // brand-new TCP connection can arrive at WinDivert before the next TCP-table
 // refresh. On a cache miss, perform one serialized live table refresh and retry.
-// This keeps the hot path fast while preventing the first packet of a new
-// browser connection from being incorrectly passed direct.
 func (r *Resolver) LookupWithRefresh(flow Flow) (Entry, bool) {
 	if e, ok := r.Lookup(flow); ok {
 		return e, true
@@ -154,7 +237,6 @@ func (r *Resolver) LookupWithRefresh(flow Flow) (Entry, bool) {
 	r.fallbackMu.Lock()
 	defer r.fallbackMu.Unlock()
 
-	// Another packet may have refreshed the table while we waited.
 	if e, ok := r.Lookup(flow); ok {
 		return e, true
 	}
@@ -178,8 +260,6 @@ func processName(pid uint32) string {
 	if pid == 0 {
 		return ""
 	}
-	// QueryFullProcessImageNameW only needs PROCESS_QUERY_LIMITED_INFORMATION.
-	// Avoiding PROCESS_VM_READ also makes protected-process classification more reliable.
 	ret, _, _ := openProcess.Call(processQueryLimitedInfo, 0, uintptr(pid))
 	if ret == 0 {
 		return ""
