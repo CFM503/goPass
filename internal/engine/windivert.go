@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"log"
@@ -40,9 +39,8 @@ func stopAndRemoveService(name string) {
 func stopAndRemoveWinDivertDriver(){stopAndRemoveService("WinDivert");stopAndRemoveService("WinDivert14")}
 func CleanUpDependencies(){stopAndRemoveWinDivertDriver();cwd,err:=os.Getwd();if err!=nil{cwd="."};for _,n:=range []string{"WinDivert.dll","WinDivert64.sys","WinDivert64.sys.tmp"}{_=os.Remove(filepath.Join(cwd,n))}}
 func CleanUpOnShutdown(){if wdDLL!=nil&&wdDLL.dll!=nil{_=wdDLL.dll.Release();wdDLL=nil};stopAndRemoveWinDivertDriver();if cwd,err:=os.Getwd();err==nil{for _,n:=range []string{"WinDivert.dll","WinDivert64.sys","WinDivert64.sys.tmp"}{_=os.Remove(filepath.Join(cwd,n))}}}
+func fileContentMatch(path string,want []byte)bool{data,err:=os.ReadFile(path);if err!=nil{return false};if len(data)!=len(want){return false};for i:=range data{if data[i]!=want[i]{return false}};return true}
 func extractSysFile(path string,data []byte)error{if err:=os.WriteFile(path,data,0755);err==nil{return nil};tmp:=path+".tmp";if err:=os.WriteFile(tmp,data,0755);err!=nil{return err};k:=syscall.NewLazyDLL("kernel32.dll");m:=k.NewProc("MoveFileExW");s,_:=syscall.UTF16PtrFromString(tmp);d,_:=syscall.UTF16PtrFromString(path);ret,_,err:=m.Call(uintptr(unsafe.Pointer(s)),uintptr(unsafe.Pointer(d)),3);if ret!=0{return nil};_=os.Remove(tmp);return fmt.Errorf("replace SYS failed: %w",err)}
-func mustStatSize(path string)int64{info,err:=os.Stat(path);if err!=nil{return -1};return info.Size()}
-func getExeDir()string{exe,err:=os.Executable();if err!=nil{return os.TempDir()};return filepath.Dir(exe)}
 func loadWinDivert()(*winDivertDLL,error){wdOnce.Do(func(){stopAndRemoveWinDivertDriver();cwd,err:=os.Getwd();if err!=nil{cwd="."};dllPath:=filepath.Join(cwd,"WinDivert.dll");sysPath:=filepath.Join(cwd,"WinDivert64.sys");if !fileContentMatch(dllPath,windivertDLL){if err:=os.WriteFile(dllPath,windivertDLL,0755);err!=nil{wdErr=err;return}};if !fileContentMatch(sysPath,windivertSYS){if err:=extractSysFile(sysPath,windivertSYS);err!=nil&&!fileContentMatch(sysPath,windivertSYS){wdErr=err;return}};dll,err:=windows.LoadDLL(dllPath);if err!=nil{wdErr=err;return};find:=func(n string)*windows.Proc{p,e:=dll.FindProc(n);if e!=nil{wdErr=e;return nil};return p};wdDLL=&winDivertDLL{dll:dll,procOpen:find("WinDivertOpen"),procRecv:find("WinDivertRecv"),procSend:find("WinDivertSend"),procClose:find("WinDivertClose"),procCalcChecks:find("WinDivertHelperCalcChecksums")}});return wdDLL,wdErr}
 type winDivertHandle struct{handle windows.Handle;dll *winDivertDLL}
 func wdOpen(filter string,layer,priority int,flags uint64)(*winDivertHandle,error){dll,err:=loadWinDivert();if err!=nil{return nil,err};p,err:=syscall.BytePtrFromString(filter);if err!=nil{return nil,err};ret,_,eno:=dll.procOpen.Call(uintptr(unsafe.Pointer(p)),uintptr(layer),uintptr(priority),uintptr(flags));if ret==uintptr(windows.InvalidHandle){return nil,fmt.Errorf("WinDivertOpen failed: %w",eno)};return &winDivertHandle{handle:windows.Handle(ret),dll:dll},nil}
