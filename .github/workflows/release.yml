@@ -109,8 +109,7 @@ jobs:
             - Socket Buffer 固定为 0，使用 Windows TCP Auto-Tuning
             - 普通 Web UI 不再开放底层 TCP Socket Buffer / Linger 等参数
           files: |
-            gopass.exe
-            gopass_*.exe
+            gopass_1.6.6.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
