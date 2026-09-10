@@ -10,9 +10,7 @@ function getDOM() {
         rxBytes: document.getElementById('rx-bytes'),
         txBytes: document.getElementById('tx-bytes'),
         proxyBody: document.getElementById('conn-list-proxy'),
-        proxyTitle: document.getElementById('proxy-title'),
-        directTitle: document.getElementById('direct-title'),
-        directBody: document.getElementById('conn-list-direct')
+        proxyTitle: document.getElementById('proxy-title')
     };
     return _domCache;
 }
@@ -72,8 +70,6 @@ function renderConnections(conns, dom = getDOM()) {
             ? visible.map(c => `<tr><td>${escapeHtml(c.target || 'unknown')}</td><td>${escapeHtml(c.host || '')}</td><td><span style="color:var(--accent)">PROXY</span></td></tr>`).join('')
             : '<tr><td colspan="3">No active proxied connections.</td></tr>';
     }
-    if (dom.directTitle) dom.directTitle.innerText = 'Direct Connections (disabled)';
-    if (dom.directBody) dom.directBody.innerHTML = '<tr><td colspan="3">Direct/split routing is disabled in GoPass v1.6.7.</td></tr>';
 }
 
 function escapeHtml(value) { return String(value).replace(/[&<>'"]/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[ch])); }
@@ -101,10 +97,7 @@ function loadUpstream() {
 function loadPerformance() {
     fetch('/api/performance').then(checkResponse).then(data => {
         const select = document.getElementById('relay-buffer-size');
-        if (select && Number.isFinite(data.buffer_size)) {
-            const value = Math.min(1048576, Math.max(32768, Number(data.buffer_size)));
-            select.value = String(value);
-        }
+        if (select && Number.isFinite(data.buffer_size)) select.value = String(Math.min(1048576, Math.max(32768, Number(data.buffer_size))));
     }).catch(console.error);
 }
 
@@ -117,7 +110,6 @@ async function saveSettings() {
     const addrInput = document.getElementById('upstream-addr');
     const portInput = document.getElementById('upstream-port');
     const bufferInput = document.getElementById('relay-buffer-size');
-
     let wsInterval = Number.parseInt(wsInput?.value || '5', 10);
     let connLimit = Number.parseInt(limitInput?.value || '20', 10);
     const type = typeInput?.value || 'socks5';
@@ -128,7 +120,6 @@ async function saveSettings() {
     if (!Number.isFinite(connLimit) || connLimit < 1) connLimit = 20;
     if (!Number.isFinite(bufferSize) || bufferSize < 32768 || bufferSize > 1048576) { alert('Relay buffer must be between 32 KB and 1 MB.'); return; }
     if (!address || !Number.isInteger(port) || port < 1 || port > 65535) { alert('Please enter a valid upstream address and port.'); return; }
-
     if (btn) btn.innerText = 'Saving...';
     try {
         const [settingsRes, upstreamRes, perfRes] = await Promise.all([
