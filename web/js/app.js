@@ -1,7 +1,5 @@
 let uiConnLimit = 20;
-let lastConnCount = -1;
 let lastConnHash = 0;
-let ruleSet = new Set();
 let _domCache = null;
 
 function getDOM() {
@@ -12,613 +10,160 @@ function getDOM() {
         rxBytes: document.getElementById('rx-bytes'),
         txBytes: document.getElementById('tx-bytes'),
         proxyBody: document.getElementById('conn-list-proxy'),
-        directBody: document.getElementById('conn-list-direct'),
         proxyTitle: document.getElementById('proxy-title'),
         directTitle: document.getElementById('direct-title'),
+        directBody: document.getElementById('conn-list-direct')
     };
     return _domCache;
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    const rulesNav = document.getElementById('nav-rules');
+    const rulesView = document.getElementById('view-rules');
+    if (rulesNav) rulesNav.style.display = 'none';
+    if (rulesView) rulesView.style.display = 'none';
+
     connectWS();
-    loadRules();
+    loadSettings();
+    loadUpstream();
 
-    const proxyBody = document.getElementById('conn-list-proxy');
-    const directBody = document.getElementById('conn-list-direct');
-
-    if (proxyBody) {
-        proxyBody.addEventListener('click', handleConnRowClick);
-    }
-    if (directBody) {
-        directBody.addEventListener('click', handleConnRowClick);
-    }
+    const saveButton = document.getElementById('save-settings-btn');
+    if (saveButton) saveButton.addEventListener('click', saveSettings);
 });
 
-function handleConnRowClick(e) {
-    const header = e.target.closest('.process-group-header');
-    if (!header) return;
-    header.classList.toggle('expanded');
-    let next = header.nextElementSibling;
-    while (next && next.classList.contains('process-group-child')) {
-        next.classList.toggle('show');
-        next = next.nextElementSibling;
-    }
-}
-
 function connectWS() {
-    const wsUrl = `ws://${window.location.host}/ws`;
-    const socket = new WebSocket(wsUrl);
-
-    socket.onopen = () => {
-        const el = document.getElementById('engine-status');
-        if (el) { el.classList.remove('red'); el.classList.add('green'); }
-    };
-
-    socket.onmessage = (event) => {
+    const socket = new WebSocket(`ws://${window.location.host}/ws`);
+    socket.onopen = () => setEngineStatus(true);
+    socket.onmessage = event => {
         try {
             const data = JSON.parse(event.data);
             const dom = getDOM();
-            if (dom.sysPid && data.pid) dom.sysPid.innerText = data.pid;
-            if (dom.connCount) dom.connCount.innerText = data.connections || 0;
-            if (dom.rxBytes) dom.rxBytes.innerText = data.rx || "0 B/s";
-            if (dom.txBytes) dom.txBytes.innerText = data.tx || "0 B/s";
-
-            if (data.active) {
-                const count = data.active.length;
-                if (count !== lastConnCount) {
-                    lastConnCount = count;
-                    lastConnHash = 0;
-                }
-                if (count <= 50) {
-                    let hash = 0;
-                    for (let i = 0; i < count; i++) {
-                        const c = data.active[i];
-                        const s = c.process + c.target;
-                        for (let j = 0; j < s.length; j++) {
-                            hash = ((hash << 5) - hash + s.charCodeAt(j)) | 0;
-                        }
-                    }
-                    if (hash !== lastConnHash) {
-                        lastConnHash = hash;
-                        renderConnections(data.active, dom);
-                    }
-                } else {
-                    renderConnections(data.active, dom);
-                }
-            }
-        } catch (e) {
-            console.error(e);
+            if (dom.sysPid) dom.sysPid.innerText = data.pid ?? 0;
+            if (dom.connCount) dom.connCount.innerText = data.connections ?? 0;
+            if (dom.rxBytes) dom.rxBytes.innerText = data.rx || '0 B/s';
+            if (dom.txBytes) dom.txBytes.innerText = data.tx || '0 B/s';
+            renderConnections(Array.isArray(data.active) ? data.active : [], dom);
+        } catch (err) {
+            console.error('invalid websocket message', err);
         }
     };
-
     socket.onclose = () => {
-        const el = document.getElementById('engine-status');
-        if (el) { el.classList.remove('green'); el.classList.add('red'); }
+        setEngineStatus(false);
         setTimeout(connectWS, 3000);
     };
+    socket.onerror = () => socket.close();
 }
 
-function renderConnections(conns, dom) {
-    if (!dom) dom = getDOM();
+function setEngineStatus(ready) {
+    const el = document.getElementById('engine-status');
+    if (!el) return;
+    el.classList.toggle('green', ready);
+    el.classList.toggle('red', !ready);
+}
 
-    const proxyConns = [];
-    const directConns = [];
-    for (let i = 0; i < conns.length && (proxyConns.length < uiConnLimit || directConns.length < uiConnLimit); i++) {
-        if (conns[i].policy === 'PROXY' && proxyConns.length < uiConnLimit) {
-            proxyConns.push(conns[i]);
-        } else if (conns[i].policy !== 'PROXY' && directConns.length < uiConnLimit) {
-            directConns.push(conns[i]);
-        }
-    }
+function renderConnections(conns, dom = getDOM()) {
+    const visible = conns.slice(0, Math.max(1, uiConnLimit));
+    const hashInput = visible.map(c => `${c.id || ''}|${c.target || ''}`).join('\n');
+    let hash = 0;
+    for (let i = 0; i < hashInput.length; i++) hash = ((hash << 5) - hash + hashInput.charCodeAt(i)) | 0;
+    if (hash === lastConnHash && visible.length === conns.length) return;
+    lastConnHash = hash;
 
     if (dom.proxyTitle) dom.proxyTitle.innerText = `Proxied Connections (Top ${uiConnLimit})`;
-    if (dom.directTitle) dom.directTitle.innerText = `Direct Connections (Top ${uiConnLimit})`;
-
-    renderGroupedConnections(dom.proxyBody, proxyConns, false);
-    renderGroupedConnections(dom.directBody, directConns, true);
+    if (dom.proxyBody) {
+        dom.proxyBody.innerHTML = visible.length
+            ? visible.map(c => `<tr><td>${escapeHtml(c.target || 'unknown')}</td><td>${escapeHtml(c.host || '')}</td><td><span style="color:var(--accent)">PROXY</span></td></tr>`).join('')
+            : '<tr><td colspan="3">No active proxied connections.</td></tr>';
+    }
+    if (dom.directTitle) dom.directTitle.innerText = 'Direct Connections (disabled)';
+    if (dom.directBody) dom.directBody.innerHTML = '<tr><td colspan="3">GoPass v1.6.7 does not perform direct/split routing.</td></tr>';
 }
 
-function renderGroupedConnections(tbody, conns, showAddButton) {
-    const groups = {};
-    for (let i = 0; i < conns.length; i++) {
-        const name = conns[i].process || 'unknown';
-        if (!groups[name]) groups[name] = [];
-        groups[name].push(conns[i]);
-    }
-
-    const fragment = document.createDocumentFragment();
-    const sortedKeys = Object.keys(groups).sort();
-
-    for (let gi = 0; gi < sortedKeys.length; gi++) {
-        const processName = sortedKeys[gi];
-        const items = groups[processName];
-
-        const headerTr = document.createElement('tr');
-        headerTr.className = 'process-group-header';
-        headerTr.dataset.process = processName;
-
-        const isWhitelisted = ruleSet.has(processName);
-        let actionHtml;
-        if (showAddButton) {
-            actionHtml = isWhitelisted
-                ? '<span style="color:var(--text-secondary); font-size:12px;">Already in Whitelist</span>'
-                : `<button onclick="event.stopPropagation(); quickAddRule('${processName}')" style="padding:4px 8px; background:var(--accent); border:none; color:white; border-radius:4px; cursor:pointer; font-size:12px;">Add to Rules</button>`;
-        } else {
-            actionHtml = isWhitelisted
-                ? '<span style="color:var(--text-secondary); font-size:12px;">In Whitelist</span>'
-                : `<button onclick="event.stopPropagation(); blockFromProxy('${processName}')" style="padding:4px 8px; background:#f85149; border:none; color:white; border-radius:4px; cursor:pointer; font-size:12px;">Block from Proxy</button>`;
-        }
-
-        const targetStr = items.length > 1 ? items.map(i => i.target).join(', ') : items[0].target;
-        const hostStr = items.length > 1 ? items.map(i => i.host).join(', ') : items[0].host;
-
-        headerTr.innerHTML = `<td>${processName}<span class="conn-count">${items.length}</span></td><td>${targetStr}</td><td>${hostStr}</td><td>${actionHtml}</td>`;
-        fragment.appendChild(headerTr);
-
-        items.sort((a, b) => a.target.localeCompare(b.target));
-        const policyCell = showAddButton ? '<span style="color:var(--text-secondary); font-size:12px;">Direct</span>' : null;
-
-        for (let ci = 0; ci < items.length; ci++) {
-            const childTr = document.createElement('tr');
-            childTr.className = 'process-group-child';
-            childTr.innerHTML = `<td>${items[ci].target}</td><td>${items[ci].host}</td><td>${policyCell || `<span style="color: var(--accent)">${items[ci].policy}</span>`}</td>`;
-            fragment.appendChild(childTr);
-        }
-    }
-
-    tbody.innerHTML = '';
-    tbody.appendChild(fragment);
+function escapeHtml(value) {
+    return String(value).replace(/[&<>'"]/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[ch]));
 }
-
-window.quickAddRule = function (processName) {
-    if (processName === 'unknown' || !processName) {
-        alert("Cannot add unknown process.");
-        return;
-    }
-
-    if (ruleSet.has(processName)) {
-        alert("The program is already in the whitelist!");
-        return;
-    }
-
-    currentRules.push({
-        type: 'process',
-        payload: processName,
-        outbound: 'proxy'
-    });
-    ruleSet.add(processName);
-
-    saveRules();
-    alert(`Successfully added ${processName} to whitelist!`);
-};
-
-window.blockFromProxy = function (processName) {
-    if (processName === 'unknown' || !processName) {
-        alert("Cannot add unknown process.");
-        return;
-    }
-
-    if (ruleSet.has(processName)) {
-        alert("The program is already in the rules!");
-        return;
-    }
-
-    currentRules.push({
-        type: 'process',
-        payload: processName,
-        outbound: 'direct'
-    });
-    ruleSet.add(processName);
-
-    saveRules();
-    alert(`Successfully blocked ${processName} from using proxy!`);
-};
-
-const navDashboard = document.getElementById('nav-dashboard');
-const navRules = document.getElementById('nav-rules');
-const navSettings = document.getElementById('nav-settings');
-
-const viewDashboard = document.getElementById('view-dashboard');
-const viewRules = document.getElementById('view-rules');
-const viewSettings = document.getElementById('view-settings');
-
-function switchView(viewId) {
-    navDashboard.classList.remove('active');
-    navRules.classList.remove('active');
-    navSettings.classList.remove('active');
-    viewDashboard.style.display = 'none';
-    viewRules.style.display = 'none';
-    viewSettings.style.display = 'none';
-
-    if (viewId === 'dashboard') {
-        navDashboard.classList.add('active');
-        viewDashboard.style.display = 'block';
-    } else if (viewId === 'rules') {
-        navRules.classList.add('active');
-        viewRules.style.display = 'block';
-        loadRules();
-    } else if (viewId === 'settings') {
-        navSettings.classList.add('active');
-        viewSettings.style.display = 'block';
-        loadSettings();
-        loadSplitSettings();
-    }
-}
-
-navDashboard.addEventListener('click', (e) => { e.preventDefault(); switchView('dashboard'); });
-navRules.addEventListener('click', (e) => { e.preventDefault(); switchView('rules'); });
-navSettings.addEventListener('click', (e) => { e.preventDefault(); switchView('settings'); });
-
-let currentRules = [];
-
-function loadRules() {
-    fetch('/api/rules')
-        .then(res => res.json())
-        .then(data => {
-            currentRules = data.rules || [];
-            ruleSet = new Set(currentRules.map(r => r.payload));
-            renderRules();
-        })
-        .catch(console.error);
-}
-
-function renderRules() {
-    const list = document.getElementById('rules-list');
-    if (currentRules.length > 0) {
-        list.innerHTML = currentRules.map((r, idx) =>
-            `<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; padding:10px; background:rgba(255,255,255,0.05); border-radius:4px;">
-                <div><strong>${r.payload}</strong> (${r.type}) &rarr; ${r.outbound}</div>
-                <button onclick="deleteRule(${idx})" style="padding:5px 10px; background:rgba(255,50,50,0.2); border:1px solid rgba(255,50,50,0.5); color:white; border-radius:4px; cursor:pointer;">Delete</button>
-            </div>`
-        ).join('');
-    } else {
-        list.innerHTML = "No rules configured.";
-    }
-}
-
-function saveRules() {
-    fetch('/api/rules', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rules: currentRules })
-    })
-        .then(res => res.json())
-        .then(data => {
-            if (data.status === 'ok') {
-                renderRules();
-            }
-        })
-        .catch(console.error);
-}
-
-document.getElementById('add-rule-btn').addEventListener('click', () => {
-    const payloadInput = document.getElementById('new-rule-payload');
-    const payload = payloadInput.value.trim();
-    if (!payload) return;
-
-    currentRules.push({
-        type: 'process',
-        payload: payload,
-        outbound: 'proxy'
-    });
-    ruleSet.add(payload);
-
-    payloadInput.value = '';
-    saveRules();
-});
-
-window.deleteRule = function (idx) {
-    ruleSet.delete(currentRules[idx].payload);
-    currentRules.splice(idx, 1);
-    saveRules();
-};
 
 function loadSettings() {
     fetch('/api/settings')
-        .then(res => res.json())
+        .then(checkResponse)
         .then(data => {
-            if (data.mode === 'global') {
-                document.getElementById('mode-global').checked = true;
-            } else {
-                document.getElementById('mode-whitelist').checked = true;
+            const ws = document.getElementById('ws-interval');
+            const limit = document.getElementById('ui-conn-limit');
+            if (ws && Number.isFinite(data.ws_refresh_interval)) ws.value = data.ws_refresh_interval;
+            if (limit && Number.isFinite(data.ui_conn_limit)) {
+                limit.value = data.ui_conn_limit;
+                uiConnLimit = Math.max(1, Number(data.ui_conn_limit));
             }
-            if (data.ws_refresh_interval) {
-                document.getElementById('ws-interval').value = data.ws_refresh_interval;
-            }
-            if (data.ui_conn_limit) {
-                document.getElementById('ui-conn-limit').value = data.ui_conn_limit;
-                uiConnLimit = data.ui_conn_limit;
-            }
-            if (data.show_direct_conns !== undefined) {
-                document.getElementById('api-show-direct').checked = data.show_direct_conns;
-            }
-            if (data.direct_conns_limit) {
-                document.getElementById('api-direct-limit').value = data.direct_conns_limit;
-            }
-        })
-        .catch(console.error);
-
-    fetch('/api/upstream')
-        .then(res => res.json())
-        .then(data => {
-            if (data.type) document.getElementById('upstream-type').value = data.type;
-            if (data.address) document.getElementById('upstream-addr').value = data.address;
-            if (data.port) document.getElementById('upstream-port').value = data.port;
         })
         .catch(console.error);
 }
 
-document.getElementById('save-settings-btn').addEventListener('click', () => {
-    const isGlobal = document.getElementById('mode-global').checked;
-    const mode = isGlobal ? 'global' : 'whitelist';
+function loadUpstream() {
+    fetch('/api/upstream')
+        .then(checkResponse)
+        .then(data => {
+            const type = document.getElementById('upstream-type');
+            const addr = document.getElementById('upstream-addr');
+            const port = document.getElementById('upstream-port');
+            if (type && data.type) type.value = data.type;
+            if (addr && data.address) addr.value = data.address;
+            if (port && data.port) port.value = data.port;
+        })
+        .catch(console.error);
+}
 
-    let wsInterval = parseInt(document.getElementById('ws-interval').value, 10);
-    if (isNaN(wsInterval) || wsInterval < 1) wsInterval = 5;
+async function saveSettings() {
+    const btn = document.getElementById('save-settings-btn');
+    const msg = document.getElementById('settings-save-msg');
+    const wsInput = document.getElementById('ws-interval');
+    const limitInput = document.getElementById('ui-conn-limit');
+    const typeInput = document.getElementById('upstream-type');
+    const addrInput = document.getElementById('upstream-addr');
+    const portInput = document.getElementById('upstream-port');
 
-    let connLimit = parseInt(document.getElementById('ui-conn-limit').value, 10);
-    if (isNaN(connLimit) || connLimit < 5) connLimit = 20;
-    uiConnLimit = connLimit;
-
-    const showDirect = document.getElementById('api-show-direct').checked;
-    let directLimit = parseInt(document.getElementById('api-direct-limit').value, 10);
-    if (isNaN(directLimit) || directLimit < 1) directLimit = 20;
-
-    const pType = document.getElementById('upstream-type').value;
-    const pAddr = document.getElementById('upstream-addr').value.trim();
-    const pPort = parseInt(document.getElementById('upstream-port').value, 10);
-
-    if (!pAddr || isNaN(pPort)) {
-        alert("Please enter a valid proxy address and port.");
+    let wsInterval = Number.parseInt(wsInput?.value || '5', 10);
+    let connLimit = Number.parseInt(limitInput?.value || '20', 10);
+    const type = typeInput?.value || 'socks5';
+    const address = (addrInput?.value || '').trim();
+    const port = Number.parseInt(portInput?.value || '0', 10);
+    if (!Number.isFinite(wsInterval) || wsInterval < 1) wsInterval = 5;
+    if (!Number.isFinite(connLimit) || connLimit < 1) connLimit = 20;
+    if (!address || !Number.isInteger(port) || port < 1 || port > 65535) {
+        alert('Please enter a valid upstream address and port.');
         return;
     }
 
-    const btn = document.getElementById('save-settings-btn');
-    const msg = document.getElementById('settings-save-msg');
-    btn.innerText = "Saving...";
-
-    Promise.all([
-        fetch('/api/settings', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                mode: mode,
-                ws_refresh_interval: wsInterval,
-                ui_conn_limit: connLimit,
-                show_direct_conns: showDirect,
-                direct_conns_limit: directLimit
-            })
-        }),
-        fetch('/api/upstream', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type: pType, address: pAddr, port: pPort })
-        })
-    ]).then(([resSettings, resUpstream]) => {
-        return Promise.all([resSettings.json(), resUpstream.json()]);
-    }).then(([dataSettings, dataUpstream]) => {
-        btn.innerText = "Save Global Settings";
-        if (dataSettings.status === 'ok' && dataUpstream.status === 'ok') {
-            msg.style.display = 'inline-block';
-            setTimeout(() => { msg.style.display = 'none'; }, 3000);
-        } else {
-            alert('Error saving some settings.');
-        }
-    }).catch(err => {
+    if (btn) btn.innerText = 'Saving...';
+    try {
+        const [settingsRes, upstreamRes] = await Promise.all([
+            fetch('/api/settings', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ ws_refresh_interval:wsInterval, ui_conn_limit:connLimit }) }),
+            fetch('/api/upstream', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ type, address, port }) })
+        ]);
+        const settings = await settingsRes.json();
+        const upstream = await upstreamRes.json();
+        if (settings.status !== 'ok' || upstream.status !== 'ok') throw new Error('save failed');
+        uiConnLimit = connLimit;
+        if (msg) { msg.style.display='inline-block'; setTimeout(() => { msg.style.display='none'; }, 3000); }
+    } catch (err) {
         console.error(err);
-        btn.innerText = "Save Global Settings";
-        alert("Network error while saving.");
-    });
-});
-
-// ============================================================================
-// Split Routing (绝对分流)
-// ============================================================================
-
-function splitStatusText(d) {
-    const s = d.status || {};
-    const lines = [];
-    const modeNames = { geo: 'geo（纯地理）', process: 'process（纯进程白名单）', both: 'both（地理+进程）' };
-    lines.push(`Mode: ${modeNames[d.mode] || d.mode} | Geo Priority: ${d.geo_priority ? 'ON' : 'OFF'} | CN Direct: ${d.cn_direct ? 'ON' : 'OFF'} | Foreign Proxy: ${d.foreign_proxy ? 'ON' : 'OFF'}`);
-    lines.push(`IPv6: ${d.block_ipv6 ? 'BLOCKED' : 'allowed'} | Foreign UDP: ${d.block_foreign_udp ? 'BLOCKED' : 'allowed'} | DNS Relay: 127.0.0.1:${d.dns_relay_port}`);
-    if (s.geosite_file || s.geoip_file) {
-        lines.push(`Rules: geosite:cn ${s.geosite_cn_entries || 0} entries (${s.geosite_file || '-'}) | geoip:cn ${s.geoip_cn_cidrs || 0} CIDRs (${s.geoip_file || '-'})`);
+        alert('Failed to save settings.');
+    } finally {
+        if (btn) btn.innerText = 'Save Settings';
     }
-    lines.push(`Custom: direct ${s.custom_direct_domains || 0}D/${s.custom_direct_ips || 0}IP | proxy ${s.custom_proxy_domains || 0}D/${s.custom_proxy_ips || 0}IP | loaded: ${s.loaded_at || '-'}`);
-    if (s.error) lines.push(`⚠️ ${s.error}`);
-    return lines.join('\n');
 }
 
-function loadSplitSettings() {
-    fetch('/api/split')
-        .then(res => res.json())
-        .then(d => {
-            document.getElementById('split-status').innerText = splitStatusText(d);
-            document.getElementById('split-enabled').checked = !!d.enabled;
-            document.getElementById('split-mode').value = d.mode || 'both';
-            document.getElementById('split-geo-priority').checked = d.geo_priority !== undefined ? d.geo_priority : true;
-            document.getElementById('split-cn-direct').checked = d.cn_direct !== undefined ? d.cn_direct : true;
-            document.getElementById('split-foreign-proxy').checked = d.foreign_proxy !== undefined ? d.foreign_proxy : true;
-            document.getElementById('split-block-ipv6').checked = d.block_ipv6 !== undefined ? d.block_ipv6 : true;
-            document.getElementById('split-block-foreign-udp').checked = d.block_foreign_udp !== undefined ? d.block_foreign_udp : true;
-            document.getElementById('split-dns-relay-port').value = d.dns_relay_port || 5300;
-            document.getElementById('split-system-dns').value = d.system_dns || '';
-            document.getElementById('split-dot-server').value = d.dot_server || '1.1.1.1:853';
-            document.getElementById('split-dot-sni').value = d.dot_sni || 'cloudflare-dns.com';
-            document.getElementById('split-custom-direct').value = (d.custom_direct || []).join('\n');
-            document.getElementById('split-custom-proxy').value = (d.custom_proxy || []).join('\n');
-            document.getElementById('split-geosite-file').value = (d.rule_files && d.rule_files.geosite) || 'geosite.dat';
-            document.getElementById('split-geoip-file').value = (d.rule_files && d.rule_files.geoip) || 'geoip.dat';
-            document.getElementById('split-auto-update-hours').value = d.auto_update_hours || 0;
-        })
-        .catch(console.error);
+function checkResponse(res) {
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
 }
 
-document.getElementById('save-split-btn').addEventListener('click', () => {
-    const split = {
-        enabled: document.getElementById('split-enabled').checked,
-        mode: document.getElementById('split-mode').value,
-        geo_priority: document.getElementById('split-geo-priority').checked,
-        cn_direct: document.getElementById('split-cn-direct').checked,
-        foreign_proxy: document.getElementById('split-foreign-proxy').checked,
-        block_ipv6: document.getElementById('split-block-ipv6').checked,
-        block_foreign_udp: document.getElementById('split-block-foreign-udp').checked,
-        dns_relay_port: parseInt(document.getElementById('split-dns-relay-port').value, 10) || 0,
-        system_dns: document.getElementById('split-system-dns').value.trim(),
-        dot_server: document.getElementById('split-dot-server').value.trim(),
-        dot_sni: document.getElementById('split-dot-sni').value.trim(),
-        custom_direct: document.getElementById('split-custom-direct').value.split('\n').map(s => s.trim()).filter(Boolean),
-        custom_proxy: document.getElementById('split-custom-proxy').value.split('\n').map(s => s.trim()).filter(Boolean),
-        auto_update_hours: parseInt(document.getElementById('split-auto-update-hours').value, 10) || 0,
-        rule_files: {
-            geosite: document.getElementById('split-geosite-file').value.trim(),
-            geoip: document.getElementById('split-geoip-file').value.trim()
-        }
-    };
-
-    fetch('/api/split', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(split)
-    })
-        .then(res => res.json())
-        .then(data => {
-            if (data.status === 'ok') {
-                const msg = document.getElementById('split-save-msg');
-                msg.style.display = 'inline-block';
-                setTimeout(() => { msg.style.display = 'none'; }, 3000);
-                loadSplitSettings();
-            } else {
-                alert('Error saving split settings.');
-            }
-        })
-        .catch(err => {
-            console.error(err);
-            alert("Network error while saving split settings.");
-        });
-});
-
-function fmtBytes(b) {
-    b = Number(b) || 0;
-    if (b < 1024) return b + ' B';
-    const units = ['KB', 'MB', 'GB'];
-    let i = -1;
-    do { b /= 1024; i++; } while (b >= 1024 && i < units.length - 1);
-    return b.toFixed(1) + ' ' + units[i];
+async function loadStatus() {
+    try {
+        const data = await fetch('/api/status').then(checkResponse);
+        const dom = getDOM();
+        if (dom.sysPid) dom.sysPid.innerText = data.pid ?? 0;
+        if (dom.connCount) dom.connCount.innerText = data.connections ?? 0;
+    } catch (err) {
+        console.error(err);
+    }
 }
-
-let splitUpdating = false;
-
-document.getElementById('update-rules-btn').addEventListener('click', () => {
-    if (splitUpdating) return;
-    splitUpdating = true;
-
-    const btn = document.getElementById('update-rules-btn');
-    const msg = document.getElementById('split-update-msg');
-    const bar = document.getElementById('split-update-progress');
-    const fill = document.getElementById('split-update-fill');
-    const ptext = document.getElementById('split-update-progress-text');
-
-    btn.disabled = true;
-    btn.innerText = "⏳ Updating...";
-    msg.style.display = 'none';
-    bar.style.display = 'block';
-    fill.style.width = '0%';
-    ptext.innerText = '准备下载...';
-
-    let stopped = false;
-    let pollTimer = null;
-    const stop = () => { if (!stopped) { stopped = true; if (pollTimer) clearTimeout(pollTimer); } };
-
-    const finish = (d) => {
-        stop();
-        bar.style.display = 'none';
-        btn.disabled = false;
-        btn.innerText = "🔄 Update Rule Files";
-        msg.style.display = 'inline-block';
-        if (d && (d.geosite_ok || d.geoip_ok)) {
-            msg.innerText = `✅ geosite ${d.geosite_ok ? 'OK' : 'SKIP'} | geoip ${d.geoip_ok ? 'OK' : 'SKIP'}`;
-        } else {
-            msg.innerText = `❌ ${(d && d.error) || 'Update failed'}`;
-        }
-        splitUpdating = false;
-        loadSplitSettings();
-    };
-
-    // 轮询下载进度（GET）
-    const poll = () => {
-        fetch('/api/split/update-rules')
-            .then(r => r.json())
-            .then(d => {
-                if (stopped) return;
-                if (d.status === 'running') {
-                    let done = 0, total = 0;
-                    ['geosite', 'geoip'].forEach(k => {
-                        if (d[k] && d[k].total > 0) { done += d[k].done; total += d[k].total; }
-                    });
-                    if (total > 0) {
-                        fill.style.width = Math.min(100, Math.round(done / total * 100)) + '%';
-                        ptext.innerText = `geosite ${fmtBytes(d.geosite && d.geosite.done)}/${fmtBytes(d.geosite && d.geosite.total)} · geoip ${fmtBytes(d.geoip && d.geoip.done)}/${fmtBytes(d.geoip && d.geoip.total)}`;
-                    } else {
-                        fill.style.width = '70%';
-                        ptext.innerText = `下载中... geosite ${fmtBytes(d.geosite && d.geosite.done)} · geoip ${fmtBytes(d.geoip && d.geoip.done)}`;
-                    }
-                    pollTimer = setTimeout(poll, 300);
-                } else {
-                    // idle / done / error：等待 POST 返回最终结果
-                    pollTimer = setTimeout(poll, 300);
-                }
-            })
-            .catch(() => { if (!stopped) pollTimer = setTimeout(poll, 500); });
-    };
-    poll();
-
-    // 启动更新（POST），完成后收尾
-    fetch('/api/split/update-rules', { method: 'POST' })
-        .then(res => res.json())
-        .then(d => { if (!stopped) finish(d); })
-        .catch(err => { if (!stopped) finish(null); console.error(err); });
-});
-
-// ============================================================================
-// 配置复位（Danger Zone）
-// ============================================================================
-
-document.getElementById('reset-config-btn').addEventListener('click', () => {
-    if (!confirm(
-        '确定要复位全部配置为出厂默认值吗？\n\n' +
-        '将重置并热生效：\n' +
-        '· 上游代理（恢复为 SOCKS5 127.0.0.1:9192）\n' +
-        '· 代理模式与进程白名单\n' +
-        '· 绝对分流（split）设置\n' +
-        '· 性能参数 / DNS 中继 / 规则自动更新\n\n' +
-        '同时保存到 config.json。此操作不可撤销！'
-    )) return;
-
-    const btn = document.getElementById('reset-config-btn');
-    const msg = document.getElementById('reset-config-msg');
-    btn.disabled = true;
-    btn.innerText = "♻️ Resetting...";
-    msg.style.display = 'inline-block';
-    msg.innerText = '正在复位...';
-
-    fetch('/api/config/reset', { method: 'POST' })
-        .then(res => res.json())
-        .then(d => {
-            btn.disabled = false;
-            btn.innerText = "♻️ Reset Config";
-            if (d.status === 'ok') {
-                msg.innerText = '✅ 已复位为出厂默认配置';
-                // 刷新各面板
-                loadSettings();
-                loadSplitSettings();
-                loadPerformSettings();
-            } else {
-                msg.innerText = '❌ ' + (d.error || '复位失败');
-            }
-        })
-        .catch(err => {
-            btn.disabled = false;
-            btn.innerText = "♻️ Reset Config";
-            msg.innerText = '❌ ' + err.message;
-        });
-});
