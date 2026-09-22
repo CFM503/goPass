@@ -2,6 +2,10 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -53,6 +57,53 @@ func TestRemovedRoutingConfigIsNotSerialized(t *testing.T) {
 		if _, ok := out[key]; ok {
 			t.Fatalf("%s must not be serialized", key)
 		}
+	}
+}
+
+// Save 必须原子替换：不留 .tmp 残留，且覆盖后内容完整。
+func TestSaveIsAtomic(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	c := DefaultConfig()
+	c.ProcessWhitelist = []string{"chrome.exe"}
+	if err := c.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path + ".tmp"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("temp file left behind: %v", err)
+	}
+	// 再存一次（覆盖已存在文件）也必须成功
+	c.ProcessWhitelist = []string{"chrome.exe", "a.exe"}
+	if err := c.Save(path); err != nil {
+		t.Fatalf("overwrite save: %v", err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.ProcessWhitelist) != 2 {
+		t.Fatalf("whitelist=%v", got.ProcessWhitelist)
+	}
+}
+
+// 区分"文件不存在"与"JSON 损坏"：前者自动创建，后者必须报错（由上层备份）。
+func TestLoadErrorKinds(t *testing.T) {
+	dir := t.TempDir()
+
+	missing := filepath.Join(dir, "nope.json")
+	if _, err := Load(missing); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("missing file err=%v, want fs.ErrNotExist", err)
+	}
+
+	corrupt := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(corrupt, []byte(`{"api": {`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(corrupt)
+	if err == nil {
+		t.Fatal("corrupt config should fail")
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("corrupt config must NOT be reported as not-exist: %v", err)
 	}
 }
 

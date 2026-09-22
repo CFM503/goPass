@@ -122,10 +122,20 @@ func Load(path string) (*Config, error) {
 	return &c, nil
 }
 
+// Save 先写临时文件再原子替换，避免进程被杀/断电时留下半个 config.json
+// （半截 JSON 会在下次启动被当成"损坏配置"）。
 func (c *Config) Save(path string) error {
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }

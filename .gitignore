@@ -24,6 +24,8 @@ go.work.sum
 
 # GoPass specific
 config.json
+config.json.tmp
+config.json.corrupt
 routes_history.json*
 release/
 
