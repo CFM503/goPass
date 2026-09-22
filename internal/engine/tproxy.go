@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"log"
@@ -46,29 +45,28 @@ func readTLSClientHello(conn net.Conn) (readBuf []byte, sni string, err error) {
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	defer conn.SetReadDeadline(time.Time{})
 
-	var buf bytes.Buffer
-	header := make([]byte, 5)
-	n, errRead := io.ReadFull(conn, header)
-	if n > 0 { buf.Write(header[:n]) }
-	if errRead != nil || n < 5 {
-		return buf.Bytes(), "", fmt.Errorf("read TLS header: %w", errRead)
+	// 头部读进栈上数组：只有确认是合法 TLS ClientHello 后才分配返回缓冲。
+	var hdr [5]byte
+	n, errRead := io.ReadFull(conn, hdr[:])
+	if n < 5 {
+		return hdr[:n], "", fmt.Errorf("read TLS header: %w", errRead)
 	}
-	if header[0] != 22 {
-		return buf.Bytes(), "", fmt.Errorf("not TLS handshake: type=%d", header[0])
+	if hdr[0] != 22 {
+		return hdr[:], "", fmt.Errorf("not TLS handshake: type=%d", hdr[0])
 	}
-	recordLen := int(header[3])<<8 | int(header[4])
+	recordLen := int(hdr[3])<<8 | int(hdr[4])
 	if recordLen <= 0 || recordLen > 16384 {
-		return buf.Bytes(), "", fmt.Errorf("invalid TLS record length: %d", recordLen)
+		return hdr[:], "", fmt.Errorf("invalid TLS record length: %d", recordLen)
 	}
-	body := make([]byte, recordLen)
-	nBody, errBody := io.ReadFull(conn, body)
-	if nBody > 0 { buf.Write(body[:nBody]) }
+	// 精确一次分配（5 + recordLen），替代 bytes.Buffer 的多次扩容+拷贝。
+	all := make([]byte, 5+recordLen)
+	copy(all, hdr[:])
+	nBody, errBody := io.ReadFull(conn, all[5:])
 	if errBody != nil {
-		return buf.Bytes(), "", fmt.Errorf("read TLS record: %w", errBody)
+		return all[:5+nBody], "", fmt.Errorf("read TLS record: %w", errBody)
 	}
-	allData := buf.Bytes()
-	foundSNI, sniErr := ExtractSNI(allData)
-	return allData, foundSNI, sniErr
+	foundSNI, sniErr := ExtractSNI(all)
+	return all, foundSNI, sniErr
 }
 
 type TProxy struct {

@@ -73,6 +73,18 @@ func (ct *ConnTracker) Get(srcIP string, srcPort uint16) (ConnTarget, bool) {
 	return v, ok
 }
 
+// HasMapped 判断某个映射端口是否仍对应一条活跃的代理连接。
+// flowPolicies 用它决定劫持记录能否清理（代理连接还在就不许清）。
+func (ct *ConnTracker) HasMapped(port uint16) bool {
+	if port == 0 {
+		return false
+	}
+	ct.mu.RLock()
+	_, ok := ct.entries[ConnKey{"127.0.0.1", port}]
+	ct.mu.RUnlock()
+	return ok
+}
+
 func (ct *ConnTracker) Delete(srcIP string, srcPort uint16) {
 	ct.mu.Lock()
 	key := ConnKey{srcIP, srcPort}

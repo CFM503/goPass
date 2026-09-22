@@ -177,6 +177,15 @@ func (e *Engine) GetProcessStatuses() []ProcessStatus {
 	return e.interceptor.ProcessStatuses()
 }
 
+// InterceptorState 返回拦截器真实运行状态：stopped / running / error，
+// 以及错误详情。/api/status 用它避免"界面显示运行中但拦截其实没生效"。
+func (e *Engine) InterceptorState() (string, string) {
+	if e.interceptor == nil {
+		return "stopped", "拦截器未启动"
+	}
+	return e.interceptor.State()
+}
+
 func (e *Engine) ResetConfig(path string) error {
 	def := config.DefaultConfig()
 	def.ProcessWhitelist = nil
