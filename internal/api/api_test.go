@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
 	"github.com/CFM503/goPass/internal/config"
@@ -18,7 +19,8 @@ func setupTestEngine(t *testing.T) (*engine.Engine, *Server) {
 	if err != nil {
 		t.Fatalf("failed to create engine: %v", err)
 	}
-	return eng, &Server{engine: eng}
+	// 用临时目录，避免测试把 config.json 写进仓库
+	return eng, &Server{engine: eng, configPath: filepath.Join(t.TempDir(), "config.json")}
 }
 
 func TestAPIPerformanceEndpoint(t *testing.T) {
@@ -47,13 +49,41 @@ func TestAPIPerformanceEndpoint(t *testing.T) {
 	}
 }
 
+func TestStatusReportsInterceptorState(t *testing.T) {
+	eng, s := setupTestEngine(t)
+	if st, _ := eng.InterceptorState(); st != "stopped" {
+		t.Fatalf("engine not started should be stopped, got %q", st)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	w := httptest.NewRecorder()
+	s.handleStatus(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp["interceptor"] != "stopped" {
+		t.Fatalf("interceptor=%v, want stopped", resp["interceptor"])
+	}
+	if _, ok := resp["interceptor_msg"]; !ok {
+		t.Fatal("interceptor_msg missing from /api/status")
+	}
+	if resp["status"] != "running" {
+		t.Fatalf("status=%v", resp["status"])
+	}
+}
+
 func TestRemovedSplitEndpointIsNotRegistered(t *testing.T) {
 	cfg := config.DefaultConfig()
 	eng, err := engine.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Server{engine: eng}
+	s := &Server{engine: eng, configPath: filepath.Join(t.TempDir(), "config.json")}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/status", s.handleStatus)
