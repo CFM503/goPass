@@ -41,9 +41,7 @@ func ClampBufferSize(size int) int {
 }
 
 type APIConfig struct {
-	ListenAddr        string `json:"listen_addr"`
-	WSRefreshInterval int    `json:"ws_refresh_interval"`
-	UIConnLimit       int    `json:"ui_conn_limit"`
+	ListenAddr string `json:"listen_addr"`
 }
 
 type SystemConfig struct {
@@ -67,7 +65,7 @@ type Server struct {
 
 func DefaultConfig() *Config {
 	return &Config{
-		API: APIConfig{ListenAddr: "127.0.0.1:8080", WSRefreshInterval: 2, UIConnLimit: 50},
+		API: APIConfig{ListenAddr: "127.0.0.1:8080"},
 		Outbounds: OutboundConfig{Servers: []Server{{Tag: "proxy", Type: "socks5", Address: "127.0.0.1", Port: 9192}}},
 		Performance: PerformanceConfig{BufferSize: 64 * 1024},
 		System: SystemConfig{TProxyPort: 7893, ConnTrackGCInterval: 15, ConnTrackTTL: 30},
@@ -90,12 +88,6 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	d := DefaultConfig()
 	if c.API.ListenAddr == "" {
 		c.API.ListenAddr = d.API.ListenAddr
-	}
-	if c.API.WSRefreshInterval <= 0 {
-		c.API.WSRefreshInterval = d.API.WSRefreshInterval
-	}
-	if c.API.UIConnLimit <= 0 {
-		c.API.UIConnLimit = d.API.UIConnLimit
 	}
 	if c.System.TProxyPort == 0 {
 		c.System = d.System

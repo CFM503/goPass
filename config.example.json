@@ -1,8 +1,6 @@
 {
   "api": {
-    "listen_addr": "127.0.0.1:8080",
-    "ws_refresh_interval": 2,
-    "ui_conn_limit": 50
+    "listen_addr": "127.0.0.1:8080"
   },
   "outbounds": {
     "servers": [

@@ -1,6 +1,9 @@
 # GoPass Changelog
 
-## Unreleased
+- **移除两项从未生效的配置**：`api.ws_refresh_interval` 与 `api.ui_conn_limit` 没有任何读者——设置页拉取的 `/api/settings` 路由从来就不存在，写入它们的 `UpdateUIConfig` 也零调用方，状态页轮询间隔实为 JS 里写死的 3 秒。字段从 schema 中删除；旧配置文件里的同名键会被 `encoding/json` 安全忽略，无需迁移。
+- **CI**：`release.yml` 分支构建的版本兜底字符串同步到 v1.8.3。
+
+## v1.8.3
 
 - **上游认证真正生效**：`config.json` 里为上游 SOCKS5/HTTP 代理配置的 `username`/`password` 此前会被静默丢弃——拨号时硬编码为空凭据，上游要求认证时白名单程序全部断网且没有任何提示。现在账号密码会贯通到 HTTP 上游的 `Proxy-Authorization` 头与 SOCKS5 的用户名密码子协商（RFC 1929）。
 - **改密码立即生效**：凭据参与 dialer 缓存键，上游配置（含账号密码）变化时重建连接器，不再复用旧的；键用 NUL 分隔，地址与凭据不会互相冒充。设置页热更新只覆写类型/地址/端口，保留已配置的账号密码并重新下发。

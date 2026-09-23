@@ -62,6 +62,45 @@ func TestRemovedRoutingConfigIsNotSerialized(t *testing.T) {
 	}
 }
 
+// v1.8.3 删除 api.ws_refresh_interval 与 api.ui_conn_limit 的回归守卫。
+//
+// 这两个字段从来没有读者：设置页拉取的 /api/settings 路由从来不存在，写入它们的
+// UpdateUIConfig 零调用方，状态页轮询间隔实为 JS 里写死的 3 秒。把它们留在 schema
+// 里只会让用户以为改这两项有效。要求是：旧配置文件带同名键必须照常加载
+// （encoding/json 忽略未知键，所以无需迁移），重新保存时不再写回去，
+// 同段的 listen_addr 则必须毫发无损地保留下来。
+func TestRemovedAPISettingsAreNotSerialized(t *testing.T) {
+	legacy := `{"api":{"listen_addr":"127.0.0.1:9999","ws_refresh_interval":7,"ui_conn_limit":123}}`
+	var c Config
+	if err := json.Unmarshal([]byte(legacy), &c); err != nil {
+		t.Fatal(err)
+	}
+	// 对照：同段里仍然存在的字段不能被误伤
+	if c.API.ListenAddr != "127.0.0.1:9999" {
+		t.Fatalf("api.listen_addr must still load, got %q", c.API.ListenAddr)
+	}
+	data, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatal(err)
+	}
+	api, ok := out["api"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("api section missing from %s", data)
+	}
+	if _, ok := api["listen_addr"]; !ok {
+		t.Fatalf("api.listen_addr must still be serialized, got %v", api)
+	}
+	for _, key := range []string{"ws_refresh_interval", "ui_conn_limit"} {
+		if _, ok := api[key]; ok {
+			t.Fatalf("api.%s must not be serialized", key)
+		}
+	}
+}
+
 // Save 必须原子替换：不留 .tmp 残留，且覆盖后内容完整。
 func TestSaveIsAtomic(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
