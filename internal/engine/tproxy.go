@@ -7,7 +7,6 @@ import (
 	"net"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/CFM503/goPass/internal/config"
@@ -185,8 +184,8 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 	result := make(chan relayResult, 2)
-	go func() { defer wg.Done(); result <- tp.relay(remote, conn, false, bufSize) }()
-	go func() { defer wg.Done(); result <- tp.relay(conn, remote, true, bufSize) }()
+	go func() { defer wg.Done(); result <- relay(remote, conn, bufSize) }()
+	go func() { defer wg.Done(); result <- relay(conn, remote, bufSize) }()
 
 	first := <-result
 	if first.err != nil { _ = conn.Close(); _ = remote.Close() }
@@ -197,24 +196,20 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 
 type relayResult struct { n int64; err error }
 
-func (tp *TProxy) relay(src, dst net.Conn, tx bool, size int) relayResult {
+// relay 把 src 复制到 dst，返回复制的字节数与首个错误。
+//
+// 这里曾经在 dst 外面再包一层 writerConn，按方向累加 Stats.RxBytes/TxBytes，
+// 为此还给每个 relay 调用传了 tx。但那两个字段从来没有任何读者：唯一会读
+// Stats 的地方只取 PID 和 Connections，字节数加完就丢了（连带 sync/atomic
+// 与这层包装一起变成纯开销）。既然没有读者，计数、tx 标记与 writerConn 一并删除。
+func relay(src, dst net.Conn, size int) relayResult {
 	buf := getRelayBuffer(size)
 	defer putRelayBuffer(buf)
-	n, err := io.CopyBuffer(writerConn{Conn: dst, stats: tp.stats, tx: tx}, src, buf)
+	n, err := io.CopyBuffer(dst, src, buf)
 	if err == nil || err == io.EOF {
 		if tc, ok := dst.(*net.TCPConn); ok { _ = tc.CloseWrite() }
 	}
 	return relayResult{n: n, err: err}
-}
-
-type writerConn struct { net.Conn; stats *Stats; tx bool }
-
-func (w writerConn) Write(p []byte) (int, error) {
-	n, err := w.Conn.Write(p)
-	if n > 0 && w.stats != nil {
-		if w.tx { atomic.AddInt64(&w.stats.TxBytes, int64(n)) } else { atomic.AddInt64(&w.stats.RxBytes, int64(n)) }
-	}
-	return n, err
 }
 
 func (tp *TProxy) Close() error { return tp.listener.Close() }

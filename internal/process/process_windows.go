@@ -149,7 +149,6 @@ func (r *Resolver) refreshUDP() error {
 	rowSize := uint32(12)
 	now := time.Now()
 	flows := make(map[UDPFlow]UDPEntry, count)
-	seenPIDs := make(map[uint32]struct{})
 
 	for idx := uint32(0); idx < count; idx++ {
 		off := 4 + idx*rowSize
@@ -160,20 +159,15 @@ func (r *Resolver) refreshUDP() error {
 		localIP := *(*uint32)(unsafe.Pointer(&row[0]))
 		localPort := ntohs(uint16(*(*uint32)(unsafe.Pointer(&row[4]))))
 		pid := *(*uint32)(unsafe.Pointer(&row[8]))
-		seenPIDs[pid] = struct{}{}
 		name := r.cachedProcessName(pid, now)
 		flow := UDPFlow{LocalIP: localIP, LocalPort: localPort}
 		flows[flow] = UDPEntry{Flow: flow, PID: pid, Name: name}
 	}
 
+	// pidCache 的清理只由 refreshTCP 负责：它按 TCP 表里见过的 PID 删条目。
+	// 这里原先也有一个循环，但两个分支都不做事——!ok 分支 continue 到循环末尾，
+	// ok 分支压根不进 if——等于把 map 白遍历一遍，连同它的 seenPIDs 一起删掉。
 	r.mu.Lock()
-	for pid := range r.pidCache {
-		if _, ok := seenPIDs[pid]; !ok {
-			// Keep PID entries that are still present in TCP as well. The TCP
-			// refresh owns the final cleanup when it sees a PID disappear.
-			continue
-		}
-	}
 	r.udpFlows = flows
 	r.mu.Unlock()
 	return nil

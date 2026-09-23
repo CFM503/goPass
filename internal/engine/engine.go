@@ -25,8 +25,6 @@ type Engine struct {
 type Stats struct {
 	PID int
 	Connections int
-	RxBytes int64
-	TxBytes int64
 	mu sync.RWMutex
 	active map[string]map[string]interface{}
 }
@@ -55,18 +53,6 @@ func (s *Stats) RemoveActiveConn(id string) {
 		if s.Connections > 0 { s.Connections-- }
 	}
 	s.mu.Unlock()
-}
-
-func (s *Stats) GetActive() []map[string]interface{} {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make([]map[string]interface{}, 0, len(s.active))
-	for _, item := range s.active {
-		c := make(map[string]interface{}, len(item))
-		for k, v := range item { c[k] = v }
-		out = append(out, c)
-	}
-	return out
 }
 
 func New(cfg *config.Config) (*Engine, error) {
@@ -149,15 +135,6 @@ func (e *Engine) UpdateUpstream(pt, addr string, port int, save string) {
 	if save != "" { _ = e.SaveConfig(save) }
 }
 
-func (e *Engine) UpdateUIConfig(ws, limit int) {
-	if ws < 1 { ws = 5 }
-	if limit < 1 { limit = 20 }
-	e.cfgMu.Lock()
-	e.cfg.API.WSRefreshInterval = ws
-	e.cfg.API.UIConnLimit = limit
-	e.cfgMu.Unlock()
-}
-
 // normalizeWhitelist 清洗白名单：去空白、转小写、去重（保持首次出现的顺序）。
 func normalizeWhitelist(list []string) []string {
 	clean := make([]string, 0, len(list))
@@ -236,27 +213,6 @@ func (e *Engine) InterceptorState() (string, string) {
 		return "stopped", "拦截器未启动"
 	}
 	return e.interceptor.State()
-}
-
-func (e *Engine) ResetConfig(path string) error {
-	def := config.DefaultConfig()
-	def.ProcessWhitelist = nil
-	e.cfgMu.Lock()
-	e.cfg = def
-	e.cfgMu.Unlock()
-	if e.tproxy != nil {
-		e.tproxy.UpdatePerformance(def.Performance)
-		for _, srv := range def.Outbounds.Servers {
-			if srv.Type == "socks5" || srv.Type == "http" {
-				e.tproxy.UpdateUpstream(srv.Type, fmt.Sprintf("%s:%d", srv.Address, srv.Port), srv.Username, srv.Password)
-				if e.interceptor != nil { e.interceptor.SetProxyAddr(proxyFilterIP(srv.Address), uint16(srv.Port)) }
-				break
-			}
-		}
-	}
-	if e.interceptor != nil { e.interceptor.SetWhitelist(nil) }
-	if path != "" { return e.SaveConfig(path) }
-	return nil
 }
 
 func (e *Engine) GetConfig() *config.Config {

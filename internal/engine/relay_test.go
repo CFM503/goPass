@@ -16,7 +16,7 @@ func TestRelayCopiesPayloadExactlyOnce(t *testing.T) {
 
 	payload := bytes.Repeat([]byte("GoPass-relay-"), 4096)
 	resultCh := make(chan relayResult, 1)
-	go func() { resultCh <- (&TProxy{}).relay(srcR, dstW, true, 256*1024) }()
+	go func() { resultCh <- relay(srcR, dstW, 256*1024) }()
 
 	writeDone := make(chan error, 1)
 	go func() {
@@ -47,7 +47,7 @@ func TestRelayErrorTerminates(t *testing.T) {
 	defer upstreamW.Close()
 
 	resultCh := make(chan relayResult, 1)
-	go func() { resultCh <- (&TProxy{}).relay(clientR, upstreamW, true, 64*1024) }()
+	go func() { resultCh <- relay(clientR, upstreamW, 64*1024) }()
 	_ = clientW.Close()
 	select {
 	case <-resultCh:

@@ -13,6 +13,11 @@
 - **进程表尺寸竞态不再丢整轮识别**：`GetExtendedTcpTable`/`GetExtendedUdpTable` 是「先问尺寸、再取数据」的两段式调用，两次调用之间表变长时第二步返回 `ERROR_INSUFFICIENT_BUFFER`(122) 并带上新尺寸，而四个调用点此前都直接放弃本轮——数据包路径上的同步兜底一旦失败，这一条流就落回「未定型」，白名单程序悄悄走直连且状态页毫无异样。现在按返回的新尺寸重取，尺寸不变大或超过重试上限即停止，不会空转。
 - **Web 控制台优雅关闭**：`StartServer` 改为先绑定端口并把 `*http.Server` 交回调用方，退出时先停 API（最多给 3 秒让在途请求收尾，例如正在写配置的保存），再停引擎，避免进程退出把请求拦腰截断；绑定失败仍以错误返回，服务期间出错只记日志，代理不受影响。
 
+- **删除失效的设置页拉取**：前端 `loadSettings()` 请求的 `/api/settings` 路由从来就不存在，每次必然 404 后被 `catch` 吞掉，是个恒为空操作；连同它唯一写入、却从未被任何代码读过的 `uiConnLimit` 一并删除。
+- **清理三处无调用方的引擎接口**：`ResetConfig`、`UpdateUIConfig`、`Stats.GetActive` 全仓库零调用方。
+- **数据面去掉只写不读的字节计数**：`Stats.RxBytes/TxBytes` 只有写入、没有读者（唯一读 `Stats` 的地方只取 `PID` 与 `Connections`）。删掉字段后，`relay` 外层包的 `writerConn`、按方向传的 `tx` 标记以及 `sync/atomic` 引用一并消失，转发直接走 `io.CopyBuffer`，少一次接口包装与两次原子加法；基准仍是 0 alloc。
+- **移除 `refreshUDP` 的空循环**：该循环两个分支都不做事（`!ok` 分支 `continue` 到循环末尾，`ok` 分支不进 `if`），等于把 `pidCache` 白遍历一遍；`pidCache` 的清理本就由 `refreshTCP` 负责，连同为它服务的 `seenPIDs` 一并删除。
+
 ## v1.8.2
 
 - **API 仅限本地同源访问**：`/api/*` 拒绝跨源 `Origin`（防网页 CSRF 篡改上游代理与白名单）以及既非回环也非监听地址的 `Host`（防 DNS Rebinding 读取状态）；静态资源不经过校验，本机 Web UI 行为不变。
