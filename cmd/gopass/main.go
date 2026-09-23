@@ -25,16 +25,22 @@ func main() {
 
 	// 必须在 CleanUpDependencies 之前：单实例锁保证第二个实例不会
 	// 停掉/删掉第一个实例正在使用的 WinDivert 驱动服务。
+	// 这里失败一律退出，绝不"记条日志继续启动"——那等于把这把锁的
+	// 唯一作用（防止二次实例拆掉驱动）直接绕过去。
 	if err := singleton.Acquire(); err != nil {
-		if errors.Is(err, singleton.ErrAlreadyRunning) {
-			fmt.Println("检测到 GoPass 已在运行，本实例退出。")
-			fmt.Println("（重复启动会打断正在代理的连接，请勿多开。）")
-			fmt.Println()
-			fmt.Println("按 Enter 退出...")
-			_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
-			os.Exit(1)
+		switch {
+		case errors.Is(err, singleton.ErrAlreadyRunning):
+			fmt.Println("检测到 GoPass 已在运行（或本进程无权访问单实例锁），本实例退出。")
+			fmt.Println("（重复启动会打断正在代理的连接；请先关闭已运行的实例，")
+			fmt.Println("或用管理员权限启动本实例。）")
+		default:
+			log.Printf("单实例检查失败: %v", err)
+			fmt.Println("无法取得单实例锁，本实例退出。")
 		}
-		log.Printf("单实例检查失败（继续启动）: %v", err)
+		fmt.Println()
+		fmt.Println("按 Enter 退出...")
+		_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
+		os.Exit(1)
 	}
 
 	fmt.Println("=== GoPass 透明代理 ===")

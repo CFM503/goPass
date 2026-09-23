@@ -41,3 +41,27 @@ func TestAcquireIsIdempotent(t *testing.T) {
 		t.Fatalf("repeat Acquire should be a no-op: %v", err)
 	}
 }
+
+// ERROR_ACCESS_DENIED 必须与"已在运行"同等对待：跨完整性级别（普通权限实例
+// 访问管理员创建的 Global\ 对象）与缺少 SeCreateGlobalPrivilege 都返回它。
+// 把它当成可恢复的普通错误，会让 main 继续启动并随即停掉 WinDivert 服务，
+// 打断第一个实例的连接。这里不碰真实 mutex，因此不依赖本机是否已运行 GoPass。
+func TestCreateMutexErrorsFailClosed(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want error
+	}{
+		{"already exists", windows.ERROR_ALREADY_EXISTS, ErrAlreadyRunning},
+		{"access denied", windows.ERROR_ACCESS_DENIED, ErrAlreadyRunning},
+		{"nil passes through", nil, nil},
+		{"other error passes through", windows.ERROR_INVALID_HANDLE, windows.ERROR_INVALID_HANDLE},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := classifyCreateMutexErr(c.err); got != c.want {
+				t.Fatalf("classifyCreateMutexErr(%v) = %v, want %v", c.err, got, c.want)
+			}
+		})
+	}
+}
