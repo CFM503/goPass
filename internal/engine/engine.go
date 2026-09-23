@@ -86,11 +86,14 @@ func New(cfg *config.Config) (*Engine, error) {
 func (e *Engine) Start() error {
 	log.Printf("[Engine] GoPass %s starting, PID=%d", version.Version, e.Stats.PID)
 
-	proxyAddr, proxyType := "", ""
+	proxyAddr, proxyType, proxyUser, proxyPass := "", "", "", ""
 	for _, srv := range e.cfg.Outbounds.Servers {
 		if srv.Type == "socks5" || srv.Type == "http" {
 			proxyAddr = fmt.Sprintf("%s:%d", srv.Address, srv.Port)
 			proxyType = srv.Type
+			// 上游账号密码必须一起带过去，否则 config.json 里配的认证
+			// 会被静默忽略，上游要求认证时白名单程序全部断网且无提示。
+			proxyUser, proxyPass = srv.Username, srv.Password
 			break
 		}
 	}
@@ -99,7 +102,7 @@ func (e *Engine) Start() error {
 	proxyHost, proxyPort, err := parseAddr(proxyAddr)
 	if err != nil { return fmt.Errorf("invalid upstream address: %w", err) }
 
-	tp, err := NewTProxy(e.tracker, proxyType, proxyAddr, e.Stats, e.cfg.Performance, e.cfg.System.TProxyPort)
+	tp, err := NewTProxy(e.tracker, proxyType, proxyAddr, proxyUser, proxyPass, e.Stats, e.cfg.Performance, e.cfg.System.TProxyPort)
 	if err != nil { return fmt.Errorf("TProxy 初始化失败：%w", err) }
 
 	i := NewInterceptor(e.tracker, proxyFilterIP(proxyHost), uint16(proxyPort), uint16(e.cfg.System.TProxyPort), e.cfg.ProcessWhitelist)
@@ -126,6 +129,9 @@ func (e *Engine) UpdatePerformance(p config.PerformanceConfig) {
 
 func (e *Engine) UpdateUpstream(pt, addr string, port int, save string) {
 	newAddr := fmt.Sprintf("%s:%d", addr, port)
+	// 设置页只提交 type/address/port，所以这里只覆写这三项、保留原有凭据，
+	// 再把保留下来的凭据回灌给 TProxy——否则热更新会把认证清掉。
+	user, pass := "", ""
 	e.cfgMu.Lock()
 	if len(e.cfg.Outbounds.Servers) == 0 {
 		e.cfg.Outbounds.Servers = []config.Server{{Tag: "proxy", Type: pt, Address: addr, Port: port}}
@@ -134,8 +140,11 @@ func (e *Engine) UpdateUpstream(pt, addr string, port int, save string) {
 		e.cfg.Outbounds.Servers[0].Address = addr
 		e.cfg.Outbounds.Servers[0].Port = port
 	}
+	if len(e.cfg.Outbounds.Servers) > 0 {
+		user, pass = e.cfg.Outbounds.Servers[0].Username, e.cfg.Outbounds.Servers[0].Password
+	}
 	e.cfgMu.Unlock()
-	if e.tproxy != nil { e.tproxy.UpdateUpstream(pt, newAddr) }
+	if e.tproxy != nil { e.tproxy.UpdateUpstream(pt, newAddr, user, pass) }
 	if e.interceptor != nil { e.interceptor.SetProxyAddr(proxyFilterIP(addr), uint16(port)) }
 	if save != "" { _ = e.SaveConfig(save) }
 }
@@ -196,7 +205,7 @@ func (e *Engine) ResetConfig(path string) error {
 		e.tproxy.UpdatePerformance(def.Performance)
 		for _, srv := range def.Outbounds.Servers {
 			if srv.Type == "socks5" || srv.Type == "http" {
-				e.tproxy.UpdateUpstream(srv.Type, fmt.Sprintf("%s:%d", srv.Address, srv.Port))
+				e.tproxy.UpdateUpstream(srv.Type, fmt.Sprintf("%s:%d", srv.Address, srv.Port), srv.Username, srv.Password)
 				if e.interceptor != nil { e.interceptor.SetProxyAddr(proxyFilterIP(srv.Address), uint16(srv.Port)) }
 				break
 			}

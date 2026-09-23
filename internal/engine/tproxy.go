@@ -78,13 +78,13 @@ type TProxy struct {
 	stats      *Stats
 }
 
-func NewTProxy(tracker *ConnTracker, proxyType, proxyAddr string, stats *Stats, perf config.PerformanceConfig, tproxyPort int) (*TProxy, error) {
+func NewTProxy(tracker *ConnTracker, proxyType, proxyAddr, proxyUser, proxyPass string, stats *Stats, perf config.PerformanceConfig, tproxyPort int) (*TProxy, error) {
 	ln, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", tproxyPort))
 	if err != nil { return nil, fmt.Errorf("TProxy listen failed: %w", err) }
 	return &TProxy{
 		listener: ln,
 		tracker: tracker,
-		upstream: NewUpstreamDialer(proxyType, proxyAddr),
+		upstream: NewUpstreamDialer(proxyType, proxyAddr, proxyUser, proxyPass),
 		bufferSize: config.ClampBufferSize(perf.BufferSize),
 		stats: stats,
 	}, nil
@@ -96,8 +96,9 @@ func (tp *TProxy) UpdatePerformance(perf config.PerformanceConfig) {
 	tp.perfMu.Unlock()
 }
 
-func (tp *TProxy) UpdateUpstream(proxyType, proxyAddr string) {
-	tp.upstream.Update(proxyType, proxyAddr)
+func (tp *TProxy) UpdateUpstream(proxyType, proxyAddr, proxyUser, proxyPass string) {
+	tp.upstream.Update(proxyType, proxyAddr, proxyUser, proxyPass)
+	// 只打印类型与地址：凭据不能进日志。
 	log.Printf("[TProxy] upstream proxy switched to %s -> %s", proxyType, proxyAddr)
 }
 
