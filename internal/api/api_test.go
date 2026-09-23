@@ -3,9 +3,11 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/CFM503/goPass/internal/config"
@@ -92,5 +94,48 @@ func TestRemovedSplitEndpointIsNotRegistered(t *testing.T) {
 	mux.ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected /api/rules to be removed, got %d", w.Code)
+	}
+}
+
+// B5 回归：并发 POST 白名单不能丢变更。
+//
+// 处理器此前是"先 GetProcessWhitelist 拷一份 → 就地改 → 写回整份列表"：两个并发
+// 请求会基于同一份快照各改各的，后写者整份覆盖先写者，先到的那次增删静默消失。
+// 把读-改-写收进引擎的一把锁之后，N 个并发增删必须留下 N 条。
+func TestConcurrentWhitelistEditsAreNotLost(t *testing.T) {
+	_, s := setupTestEngine(t)
+
+	const n = 32
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start // 让 n 个请求尽量同时进入处理器，制造真实的读-改-写交叠
+			body := bytes.NewBufferString(fmt.Sprintf(`{"process":"proc%02d.exe"}`, i))
+			req := httptest.NewRequest(http.MethodPost, "/api/process-whitelist", body)
+			w := httptest.NewRecorder()
+			s.handleProcessWhitelist(w, req)
+			if w.Code != http.StatusOK {
+				t.Errorf("POST #%d status=%d", i, w.Code)
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	got := s.engine.GetProcessWhitelist()
+	if len(got) != n {
+		t.Fatalf("whitelist kept %d of %d concurrent additions: %v", len(got), n, got)
+	}
+	seen := map[string]bool{}
+	for _, p := range got {
+		seen[p] = true
+	}
+	for i := 0; i < n; i++ {
+		if want := fmt.Sprintf("proc%02d.exe", i); !seen[want] {
+			t.Fatalf("lost update: %s missing from %v", want, got)
+		}
 	}
 }

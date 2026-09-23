@@ -2,7 +2,9 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"io/fs"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -74,17 +76,33 @@ func allowedAPIHost(listenHost, hostHeader string) bool {
 	return net.ParseIP(hostname) != nil
 }
 
-func StartServer(addr string, eng *engine.Engine, configPath string) error {
+// StartServer 先绑定端口，成功后在后台 goroutine 上服务并立即返回；
+// 返回的 *http.Server 交给调用方在退出时做优雅关闭。
+//
+// 绑定失败仍以错误返回（端口被占用要能让调用方看清楚）；服务期间出错只记日志，
+// 与旧行为一致——这是控制台，不该因为一次读写错误就带走整个代理。
+//
+// 直接返回 http.ListenAndServe 的话调用方拿不到 *http.Server，进程退出只能靠
+// OS 兜底：正在跑的请求（比如正在写 config.json 的保存）会被拦腰截断。
+func StartServer(addr string, eng *engine.Engine, configPath string) (*http.Server, error) {
 	s := &Server{engine: eng, configPath: configPath}
 	mux := http.NewServeMux()
 	subFS, err := fs.Sub(web.FS, ".")
-	if err != nil { return err }
+	if err != nil { return nil, err }
 	mux.Handle("/", http.FileServer(http.FS(subFS)))
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/upstream", s.handleUpstream)
 	mux.HandleFunc("/api/performance", s.handlePerformance)
 	mux.HandleFunc("/api/process-whitelist", s.handleProcessWhitelist)
-	return http.ListenAndServe(addr, guard(addr, mux))
+	ln, err := net.Listen("tcp", addr)
+	if err != nil { return nil, err }
+	srv := &http.Server{Addr: addr, Handler: guard(addr, mux)}
+	go func() {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("API 服务器错误: %v", err)
+		}
+	}()
+	return srv, nil
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -140,16 +158,13 @@ func (s *Server) handleProcessWhitelist(w http.ResponseWriter, r *http.Request) 
 	case http.MethodPost, http.MethodDelete:
 		var req struct{Process string `json:"process"`}
 		if err:=json.NewDecoder(r.Body).Decode(&req); err!=nil || strings.TrimSpace(req.Process)=="" { http.Error(w,"process is required",http.StatusBadRequest); return }
+		// 增删整段交给引擎在一把锁里做"读-改-写"，响应直接用这次落定的结果。
+		// 此处先 Get 再 Update 的话，两个并发请求会基于同一份快照各改各的，
+		// 后写者整份覆盖先写者，静默丢掉一次变更。
 		process:=strings.TrimSpace(req.Process)
-		list:=s.engine.GetProcessWhitelist()
-		if r.Method==http.MethodPost {
-			already:=false
-			for _, p:=range list { if strings.EqualFold(p,process) { already=true; break } }
-			if !already { list=append(list,process) }
-		} else {
-			filtered:=make([]string,0,len(list)); for _,p:=range list { if !strings.EqualFold(p,process){filtered=append(filtered,p)} }; list=filtered
-		}
-		s.engine.UpdateProcessWhitelist(list,s.configPath); _=json.NewEncoder(w).Encode(map[string]interface{}{"status":"ok","processes":s.engine.GetProcessWhitelist()})
+		list:=s.engine.AddProcess(process,s.configPath)
+		if r.Method==http.MethodDelete { list=s.engine.RemoveProcess(process,s.configPath) }
+		_=json.NewEncoder(w).Encode(map[string]interface{}{"status":"ok","processes":list})
 	default: http.Error(w,"method not allowed",http.StatusMethodNotAllowed)
 	}
 }

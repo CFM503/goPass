@@ -86,21 +86,15 @@ func (r *Resolver) Refresh() error {
 }
 
 func (r *Resolver) refreshTCP() error {
-	size := uint32(0)
-	ret, _, _ := getExtendedTCPTable.Call(0, uintptr(unsafe.Pointer(&size)), 0, afInet, tcpTableOwnerPidAll, 0)
-	if ret != 0 && size == 0 {
-		return fmt.Errorf("GetExtendedTcpTable size failed: %d", ret)
+	buf, err := queryWinTable(getExtendedTCPTable, 0, afInet, tcpTableOwnerPidAll, 0)
+	if err != nil {
+		return fmt.Errorf("GetExtendedTcpTable: %w", err)
 	}
-	if size == 0 {
+	if len(buf) == 0 {
 		r.mu.Lock()
 		r.flows = make(map[Flow]Entry)
 		r.mu.Unlock()
 		return nil
-	}
-	buf := make([]byte, size)
-	ret, _, err := getExtendedTCPTable.Call(uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&size)), 0, afInet, tcpTableOwnerPidAll, 0)
-	if ret != 0 {
-		return fmt.Errorf("GetExtendedTcpTable failed: %v", err)
 	}
 	count := *(*uint32)(unsafe.Pointer(&buf[0]))
 	rowSize := uint32(24)
@@ -141,21 +135,15 @@ func (r *Resolver) refreshTCP() error {
 }
 
 func (r *Resolver) refreshUDP() error {
-	size := uint32(0)
-	ret, _, _ := getExtendedUDPTable.Call(0, uintptr(unsafe.Pointer(&size)), 0, afInet, udpTableOwnerPid, 0)
-	if ret != 0 && size == 0 {
-		return fmt.Errorf("GetExtendedUdpTable size failed: %d", ret)
+	buf, err := queryWinTable(getExtendedUDPTable, 0, afInet, udpTableOwnerPid, 0)
+	if err != nil {
+		return fmt.Errorf("GetExtendedUdpTable: %w", err)
 	}
-	if size == 0 {
+	if len(buf) == 0 {
 		r.mu.Lock()
 		r.udpFlows = make(map[UDPFlow]UDPEntry)
 		r.mu.Unlock()
 		return nil
-	}
-	buf := make([]byte, size)
-	ret, _, err := getExtendedUDPTable.Call(uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&size)), 0, afInet, udpTableOwnerPid, 0)
-	if ret != 0 {
-		return fmt.Errorf("GetExtendedUdpTable failed: %v", err)
 	}
 	count := *(*uint32)(unsafe.Pointer(&buf[0]))
 	rowSize := uint32(12)

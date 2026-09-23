@@ -71,6 +71,13 @@ type flowPolicyEntry struct {
 const (
 	policySweepInterval = time.Minute
 	policyPassTTL       = 15 * time.Minute // 直连记录的保留时间；过期后按"非起点→直连"重新推导，结果一致
+	// policyBlockTTL 给 IPv6 阻断记录（mappedPort==0）一个上限。这类连接在 SYN 阶段
+	// 就被丢弃，永远建立不起来，因而永远不会出现 FIN/RST 来触发清理——照旧"只由
+	// FIN/RST 清"的话，正常路径下每条记录都会永久驻留，随白名单程序的 IPv6 重试
+	// 无限累积。只需盖住 Windows 的 SYN 重试窗口（默认 4 次、约 45 秒）：到期后若还有
+	// SYN 重传，isConnectionStart 为真会重新判定并再次阻断，结果一致；已建立的连接
+	// 不可能属于这种记录，所以这里不存在"中途失效"的风险。
+	policyBlockTTL = 5 * time.Minute
 )
 
 // flowPolicies 保存每条流的路由决定。
@@ -147,7 +154,7 @@ func (p *flowPolicies) sweep() {
 		keep := false
 		switch {
 		case v.kind == policyIntercept && v.mappedPort == 0:
-			keep = true // IPv6 阻断记录只由 FIN/RST 清除
+			keep = now.Sub(v.createdAt) < policyBlockTTL // IPv6 阻断：FIN/RST 优先，否则等 TTL
 		case v.kind == policyIntercept:
 			keep = p.tracker != nil && p.tracker.HasMapped(v.mappedPort)
 		default:

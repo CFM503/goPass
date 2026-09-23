@@ -3,7 +3,18 @@ package config
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
+	"sync"
 )
+
+// saveMu 串行化整个 Save 过程（建临时文件 → 写入 → 替换）。
+//
+// 只把临时文件名做成随机还不够：Windows 的 MoveFileEx 在两个调用同时替换同一个
+// 目标时会有一方拿到 ERROR_ACCESS_DENIED，那一方的保存就丢了——而调用方
+// （engine.SaveConfig）是 `_ =` 吞掉错误的，表现成"界面提示保存成功、其实没存上"。
+// 串行之后替换永不重叠，后一个照常覆盖前一个，两边都成功。
+// 锁序恒为 cfgMu → saveMu（Save 不取 cfgMu），不会反向。
+var saveMu sync.Mutex
 
 type Config struct {
 	API              APIConfig         `json:"api"`
@@ -124,13 +135,34 @@ func Load(path string) (*Config, error) {
 
 // Save 先写临时文件再原子替换，避免进程被杀/断电时留下半个 config.json
 // （半截 JSON 会在下次启动被当成"损坏配置"）。
+//
+// 临时文件名必须每次不同。固定用 path+".tmp" 时，两个并发保存会往同一个文件里
+// WriteFile：一方截断、另一方按自己的偏移写，长度不一致就拼出杂交内容；而且前一个
+// rename 把 .tmp 移走之后，后到的那个 rename 源文件已不存在，直接报错。两条路径的
+// 结果都是"界面上保存成功、config.json 却坏了"，下次启动按损坏处理、白名单被清空。
+// CreateTemp 给出随机后缀，各方写完各自原子替换，后写者赢，两边看到的都是完整内容。
 func (c *Config) Save(path string) error {
+	saveMu.Lock()
+	defer saveMu.Unlock()
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
+	dir, base := filepath.Split(path)
+	f, err := os.CreateTemp(dir, base+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	// CreateTemp 默认 0600，这里显式还原成原先 WriteFile 用的 0644，免得行为跟着变。
+	_ = os.Chmod(tmp, 0644)
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {

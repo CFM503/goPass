@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/CFM503/goPass/internal/api"
 	"github.com/CFM503/goPass/internal/config"
@@ -94,16 +96,26 @@ func main() {
 		os.Exit(1)
 	}
 
-	go func() {
+	srv, startErr := api.StartServer(cfg.API.ListenAddr, eng, *configFile)
+	if startErr != nil {
+		log.Printf("Web 控制台启动失败: %v", startErr)
+	} else {
 		log.Printf("Web 控制台: http://%s", cfg.API.ListenAddr)
-		if err := api.StartServer(cfg.API.ListenAddr, eng, *configFile); err != nil { log.Printf("API 服务器错误: %v", err) }
-	}()
+	}
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
 	<-quit
 
 	log.Println("\n正在停止 GoPass...")
+	// 先停 API：正在跑的请求（比如正在写 config.json 的保存）最多再给 3 秒收尾，
+	// 之后才停引擎。顺序反过来的话，这些请求会被进程退出拦腰截断，
+	// 界面上"保存成功"、磁盘上却是半截文件。
+	if srv != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		_ = srv.Shutdown(ctx)
+		cancel()
+	}
 	eng.Stop()
 	log.Println("已退出。")
 }

@@ -158,7 +158,8 @@ func (e *Engine) UpdateUIConfig(ws, limit int) {
 	e.cfgMu.Unlock()
 }
 
-func (e *Engine) UpdateProcessWhitelist(list []string, save string) {
+// normalizeWhitelist 清洗白名单：去空白、转小写、去重（保持首次出现的顺序）。
+func normalizeWhitelist(list []string) []string {
 	clean := make([]string, 0, len(list))
 	seen := map[string]struct{}{}
 	for _, n := range list {
@@ -168,11 +169,53 @@ func (e *Engine) UpdateProcessWhitelist(list []string, save string) {
 		seen[n] = struct{}{}
 		clean = append(clean, n)
 	}
+	return clean
+}
+
+// mutateWhitelist 在同一把 cfgMu 里完成"读-改-写"：fn 拿到当前白名单的副本，
+// 返回的新列表立刻落进 cfg，锁在 fn 返回后才放开。
+//
+// 这是白名单唯一的写入口。此前 API 处理器先 GetProcessWhitelist() 拷一份出来、
+// 改完再写回整份列表：两个并发请求会基于同一份快照各改各的，后写者整份覆盖
+// 先写者，静默丢掉一次变更（连同那次的保存）。把改动收进锁内之后，
+// 并发增删各自累加，不再互相覆盖。
+//
+// 放锁之后才 SetWhitelist / SaveConfig：SaveConfig 会再取 cfgMu 的读锁，
+// 持锁调用会自锁死。
+func (e *Engine) mutateWhitelist(save string, fn func(cur []string) []string) []string {
 	e.cfgMu.Lock()
+	clean := fn(append([]string(nil), e.cfg.ProcessWhitelist...))
 	e.cfg.ProcessWhitelist = clean
 	e.cfgMu.Unlock()
 	if e.interceptor != nil { e.interceptor.SetWhitelist(clean) }
 	if save != "" { _ = e.SaveConfig(save) }
+	return append([]string(nil), clean...)
+}
+
+// AddProcess 把一个进程加入白名单（大小写不敏感去重），返回更新后的完整列表。
+func (e *Engine) AddProcess(name, save string) []string {
+	name = strings.TrimSpace(name)
+	if name == "" { return e.GetProcessWhitelist() }
+	return e.mutateWhitelist(save, func(cur []string) []string {
+		for _, p := range cur {
+			if strings.EqualFold(p, name) { return normalizeWhitelist(cur) }
+		}
+		return normalizeWhitelist(append(cur, name))
+	})
+}
+
+// RemoveProcess 按大小写不敏感匹配移除一个进程，返回更新后的完整列表。
+// 名字为空或不存在时列表不变，仍按清洗后的结果返回。
+func (e *Engine) RemoveProcess(name, save string) []string {
+	name = strings.TrimSpace(name)
+	return e.mutateWhitelist(save, func(cur []string) []string {
+		if name == "" { return normalizeWhitelist(cur) }
+		filtered := make([]string, 0, len(cur))
+		for _, p := range cur {
+			if !strings.EqualFold(p, name) { filtered = append(filtered, p) }
+		}
+		return normalizeWhitelist(filtered)
+	})
 }
 
 func (e *Engine) GetProcessWhitelist() []string {

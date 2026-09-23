@@ -44,12 +44,9 @@ func parseIPv6TCPRows(buf []byte, nameOf func(uint32) string) map[IPv6TCPFlow]st
 
 func (r *ipv6TCPResolver) refresh() {
     r.mu.RLock(); if time.Since(r.last) < 200*time.Millisecond { r.mu.RUnlock(); return }; r.mu.RUnlock()
-    size := uint32(0)
-    ret, _, _ := getExtendedTCPTable.Call(0, uintptr(unsafe.Pointer(&size)), 1, 23, tcpTableOwnerPidAll, 0)
-    if size == 0 || (ret != 0 && ret != 122) { return }
-    buf := make([]byte, size)
-    ret, _, _ = getExtendedTCPTable.Call(uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&size)), 1, 23, tcpTableOwnerPidAll, 0)
-    if ret != 0 { return }
+    // 取不到（含空表）就保留上一次快照且不推进 last，下一次调用可立即重试。
+    buf, err := queryWinTable(getExtendedTCPTable, 1, 23, tcpTableOwnerPidAll, 0)
+    if err != nil || len(buf) == 0 { return }
     flows := parseIPv6TCPRows(buf, processName)
     r.mu.Lock(); r.flows = flows; r.last = time.Now(); r.mu.Unlock()
 }
@@ -60,12 +57,8 @@ func RefreshIPv6UDP() { refreshIPv6UDP() }
 func LookupIPv6UDP(flow IPv6UDPFlow) (string, bool) { ipv6UDP.mu.RLock(); name, ok := ipv6UDP.m[flow]; ipv6UDP.mu.RUnlock(); return name, ok }
 func refreshIPv6UDP() {
     ipv6UDP.mu.RLock(); if time.Since(ipv6UDP.last) < 200*time.Millisecond { ipv6UDP.mu.RUnlock(); return }; ipv6UDP.mu.RUnlock()
-    size := uint32(0)
-    ret, _, _ := getExtendedUDPTable.Call(0, uintptr(unsafe.Pointer(&size)), 1, 23, udpTableOwnerPid, 0)
-    if size == 0 || (ret != 0 && ret != 122) { return }
-    buf := make([]byte, size)
-    ret, _, _ = getExtendedUDPTable.Call(uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&size)), 1, 23, udpTableOwnerPid, 0)
-    if ret != 0 { return }
+    buf, err := queryWinTable(getExtendedUDPTable, 1, 23, udpTableOwnerPid, 0)
+    if err != nil || len(buf) == 0 { return }
     count := *(*uint32)(unsafe.Pointer(&buf[0])); const rowSize = 28
     flows := make(map[IPv6UDPFlow]string, count)
     for n := uint32(0); n < count; n++ {

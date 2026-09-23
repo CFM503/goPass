@@ -3,9 +3,11 @@ package config
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -68,8 +70,13 @@ func TestSaveIsAtomic(t *testing.T) {
 	if err := c.Save(path); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(path + ".tmp"); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("temp file left behind: %v", err)
+	// 临时文件名带随机后缀，残留要按通配符查——固定名 path+".tmp" 已经查不到了
+	leftovers, err := filepath.Glob(filepath.Join(filepath.Dir(path), "*.tmp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("temp file left behind: %v", leftovers)
 	}
 	// 再存一次（覆盖已存在文件）也必须成功
 	c.ProcessWhitelist = []string{"chrome.exe", "a.exe"}
@@ -82,6 +89,87 @@ func TestSaveIsAtomic(t *testing.T) {
 	}
 	if len(got.ProcessWhitelist) != 2 {
 		t.Fatalf("whitelist=%v", got.ProcessWhitelist)
+	}
+}
+
+// Save 的失败路径必须把错误如实返回，并且绝不留下 .tmp 残留。
+// 调用方（engine.SaveConfig）是 `_ =` 吞掉错误的，这里再不返回就彻底没救了——
+// 表现成"界面提示保存成功、其实没存上"，正是 B4 要消除的那类静默失败。
+func TestSaveFailuresSurfaceAndCleanUp(t *testing.T) {
+	c := DefaultConfig()
+	c.ProcessWhitelist = []string{"chrome.exe"}
+
+	// 目录不存在 → 建临时文件那一步就失败
+	if err := c.Save(filepath.Join(t.TempDir(), "missing-dir", "config.json")); err == nil {
+		t.Fatal("saving into a missing directory must fail")
+	}
+
+	// 目标已被一个目录占住 → 替换那一步失败，此时必须把刚建的临时文件清掉
+	dir := t.TempDir()
+	target := filepath.Join(dir, "occupied")
+	if err := os.Mkdir(target, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Save(target); err == nil {
+		t.Fatal("renaming a file over a directory must fail")
+	}
+	leftovers, err := filepath.Glob(filepath.Join(dir, "*.tmp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("failed Save left temp file behind: %v", leftovers)
+	}
+}
+
+// 并发保存不能共用同一个 .tmp（B4 回归）。
+//
+// 固定用 path+".tmp" 时，N 个并发 Save 会往同一个文件里 WriteFile：一方截断、
+// 另一方按自己的偏移写，长度不一致就拼出杂交内容；而且前一个 rename 把 .tmp 移走
+// 之后，后到的那个 rename 源文件已不存在，直接报错。两条路径的结果都是"界面提示
+// 保存成功、config.json 却坏了"，下次启动按损坏配置处理、白名单被清空。
+//
+// 每个写入者的白名单长度都不同：只有长度不同才可能拼出杂交内容，
+// 这样"内容必须完整等于某个写入者的版本"这条断言才真的有判别力。
+func TestConcurrentSavesDoNotCorrupt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	const writers = 16
+
+	errs := make([]error, writers)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			c := DefaultConfig()
+			for j := 0; j <= i; j++ {
+				c.ProcessWhitelist = append(c.ProcessWhitelist, fmt.Sprintf("proc%02d.exe", j))
+			}
+			errs[i] = c.Save(path)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("save #%d failed: %v", i, err)
+		}
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("config corrupted by concurrent saves: %v", err)
+	}
+	// 内容必须是某个写入者的完整版本：proc00..procNN 且长度落在 1..writers 之内。
+	if n := len(got.ProcessWhitelist); n < 1 || n > writers {
+		t.Fatalf("whitelist length %d outside 1..%d: %v", n, writers, got.ProcessWhitelist)
+	}
+	for j, name := range got.ProcessWhitelist {
+		if want := fmt.Sprintf("proc%02d.exe", j); name != want {
+			t.Fatalf("config corrupted: entry %d=%q, want %q (full list %v)", j, name, want, got.ProcessWhitelist)
+		}
 	}
 }
 

@@ -218,13 +218,15 @@ func TestFlowPolicySweep(t *testing.T) {
 	k1 := flowKeyV4(testSrcIP(), testDstIP(), 1, 443) // 直连，超过 TTL
 	k2 := flowKeyV4(testSrcIP(), testDstIP(), 2, 443) // 劫持，代理连接已结束
 	k3 := flowKeyV4(testSrcIP(), testDstIP(), 3, 443) // 劫持，代理连接仍存活
-	k4 := flowKey{srcPort: 4, dstPort: 443, ver: 6}   // IPv6 阻断
+	k4 := flowKey{srcPort: 4, dstPort: 443, ver: 6}   // IPv6 阻断，早已过期
+	k5 := flowKey{srcPort: 5, dstPort: 443, ver: 6}   // IPv6 阻断，刚建立
 
 	p.mu.Lock()
 	p.entries[k1] = flowPolicyEntry{kind: policyPass, createdAt: old}
 	p.entries[k2] = flowPolicyEntry{kind: policyIntercept, mappedPort: 40001, createdAt: old}
 	p.entries[k3] = flowPolicyEntry{kind: policyIntercept, mappedPort: 40002, createdAt: old}
 	p.entries[k4] = flowPolicyEntry{kind: policyIntercept, mappedPort: 0, createdAt: old}
+	p.entries[k5] = flowPolicyEntry{kind: policyIntercept, mappedPort: 0, createdAt: time.Now()}
 	p.mu.Unlock()
 
 	// 只有 40002 对应的代理连接还活着
@@ -243,8 +245,11 @@ func TestFlowPolicySweep(t *testing.T) {
 	if _, _, ok := p.Get(k3); !ok {
 		t.Fatal("hijack entry with live proxied conn must survive sweep")
 	}
-	if _, _, ok := p.Get(k4); !ok {
-		t.Fatal("v6 block entry must only be cleared by FIN/RST")
+	if _, _, ok := p.Get(k4); ok {
+		t.Fatal("stale v6 block entry must be swept: it can never observe FIN/RST, so TTL is its only cleanup path")
+	}
+	if _, _, ok := p.Get(k5); !ok {
+		t.Fatal("fresh v6 block entry must survive sweep so SYN retries stay blocked")
 	}
 }
 
