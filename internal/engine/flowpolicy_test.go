@@ -99,7 +99,7 @@ func TestFlowIsLockedAfterFirstDecision(t *testing.T) {
 	i.lookupName = func(process.Flow) (string, bool) { lookups++; return "chrome.exe", true }
 
 	// 第一次：白名单为空 → 锁定直连
-	i.handleIPv4TCP(nil,buildTCPPacket(testSrcIP(), testDstIP(), 50000, 443, tcpSYN), &winDivertAddress{}, 20)
+	i.handleIPv4TCP(nil, buildTCPPacket(testSrcIP(), testDstIP(), 50000, 443, tcpSYN), &winDivertAddress{}, 20)
 	if lookups != 1 {
 		t.Fatalf("lookups=%d want 1", lookups)
 	}
@@ -112,8 +112,8 @@ func TestFlowIsLockedAfterFirstDecision(t *testing.T) {
 	i.SetWhitelist([]string{"chrome.exe"})
 
 	// 同一条流的后续包（含 SYN 重传）绝不再重新评估
-	i.handleIPv4TCP(nil,buildTCPPacket(testSrcIP(), testDstIP(), 50000, 443, tcpSYN), &winDivertAddress{}, 20)
-	i.handleIPv4TCP(nil,buildTCPPacket(testSrcIP(), testDstIP(), 50000, 443, tcpACK|0x08), &winDivertAddress{}, 20)
+	i.handleIPv4TCP(nil, buildTCPPacket(testSrcIP(), testDstIP(), 50000, 443, tcpSYN), &winDivertAddress{}, 20)
+	i.handleIPv4TCP(nil, buildTCPPacket(testSrcIP(), testDstIP(), 50000, 443, tcpACK|0x08), &winDivertAddress{}, 20)
 
 	if lookups != 1 {
 		t.Fatalf("locked flow re-evaluated: lookups=%d want 1", lookups)
@@ -130,7 +130,7 @@ func TestMidStreamFlowIsNeverHijacked(t *testing.T) {
 	i.lookupName = func(process.Flow) (string, bool) { lookups++; return "chrome.exe", true }
 
 	// 第一个包就是 PSH-ACK：连接在 GoPass 启动前就建立了
-	i.handleIPv4TCP(nil,buildTCPPacket(testSrcIP(), testDstIP(), 50001, 443, tcpACK|0x08), &winDivertAddress{}, 20)
+	i.handleIPv4TCP(nil, buildTCPPacket(testSrcIP(), testDstIP(), 50001, 443, tcpACK|0x08), &winDivertAddress{}, 20)
 
 	if lookups != 0 {
 		t.Fatalf("mid-stream flow triggered process lookup: %d, want 0", lookups)
@@ -157,7 +157,7 @@ func TestUndecidedFlowRetriesOnlyOnSYN(t *testing.T) {
 	src, dst := testSrcIP(), testDstIP()
 
 	// SYN：识别失败 → undecided，按直连放行
-	i.handleIPv4TCP(nil,buildTCPPacket(src, dst, 50003, 443, tcpSYN), &winDivertAddress{}, 20)
+	i.handleIPv4TCP(nil, buildTCPPacket(src, dst, 50003, 443, tcpSYN), &winDivertAddress{}, 20)
 	key := flowKeyV4(src, dst, 50003, 443)
 	if kind, _, ok := i.policies.Get(key); !ok || kind != policyUndecided {
 		t.Fatalf("kind=%v ok=%v, want policyUndecided", kind, ok)
@@ -167,14 +167,14 @@ func TestUndecidedFlowRetriesOnlyOnSYN(t *testing.T) {
 	}
 
 	// 中途 ACK：不重新评估（握手已进行中，不允许改道）
-	i.handleIPv4TCP(nil,buildTCPPacket(src, dst, 50003, 443, tcpACK), &winDivertAddress{}, 20)
+	i.handleIPv4TCP(nil, buildTCPPacket(src, dst, 50003, 443, tcpACK), &winDivertAddress{}, 20)
 	if lookups != 1 {
 		t.Fatalf("ACK re-evaluated: lookups=%d want 1", lookups)
 	}
 
 	// SYN 重传 + 进程表已就绪 → 允许重试
 	unknown = false
-	i.handleIPv4TCP(nil,buildTCPPacket(src, dst, 50003, 443, tcpSYN), &winDivertAddress{}, 20)
+	i.handleIPv4TCP(nil, buildTCPPacket(src, dst, 50003, 443, tcpSYN), &winDivertAddress{}, 20)
 	if lookups != 2 {
 		t.Fatalf("SYN retransmit should retry lookup: lookups=%d want 2", lookups)
 	}
@@ -185,7 +185,7 @@ func TestUndecidedFlowRetriesOnlyOnSYN(t *testing.T) {
 	}
 
 	// 再之后的 SYN：已是确定态，不再重新评估
-	i.handleIPv4TCP(nil,buildTCPPacket(src, dst, 50003, 443, tcpSYN), &winDivertAddress{}, 20)
+	i.handleIPv4TCP(nil, buildTCPPacket(src, dst, 50003, 443, tcpSYN), &winDivertAddress{}, 20)
 	if lookups != 2 {
 		t.Fatalf("definitive policy must not re-evaluate: lookups=%d want 2", lookups)
 	}
@@ -196,12 +196,12 @@ func TestFlowPolicyClearedOnFIN(t *testing.T) {
 	i.lookupName = func(process.Flow) (string, bool) { return "other.exe", true }
 
 	key := flowKeyV4(testSrcIP(), testDstIP(), 50002, 443)
-	i.handleIPv4TCP(nil,buildTCPPacket(testSrcIP(), testDstIP(), 50002, 443, tcpSYN), &winDivertAddress{}, 20)
+	i.handleIPv4TCP(nil, buildTCPPacket(testSrcIP(), testDstIP(), 50002, 443, tcpSYN), &winDivertAddress{}, 20)
 	if _, _, ok := i.policies.Get(key); !ok {
 		t.Fatal("policy not recorded after SYN")
 	}
 
-	i.handleIPv4TCP(nil,buildTCPPacket(testSrcIP(), testDstIP(), 50002, 443, tcpFIN|tcpACK), &winDivertAddress{}, 20)
+	i.handleIPv4TCP(nil, buildTCPPacket(testSrcIP(), testDstIP(), 50002, 443, tcpFIN|tcpACK), &winDivertAddress{}, 20)
 	if kind, _, ok := i.policies.Get(key); ok {
 		t.Fatalf("FIN should clear policy, still have kind=%v", kind)
 	}
@@ -218,7 +218,7 @@ func TestFlowPolicySweep(t *testing.T) {
 	k1 := flowKeyV4(testSrcIP(), testDstIP(), 1, 443) // 直连，超过 TTL
 	k2 := flowKeyV4(testSrcIP(), testDstIP(), 2, 443) // 劫持，代理连接已结束
 	k3 := flowKeyV4(testSrcIP(), testDstIP(), 3, 443) // 劫持，代理连接仍存活
-	k4 := flowKey{srcPort: 4, dstPort: 443, ver: 6}    // IPv6 阻断
+	k4 := flowKey{srcPort: 4, dstPort: 443, ver: 6}   // IPv6 阻断
 
 	p.mu.Lock()
 	p.entries[k1] = flowPolicyEntry{kind: policyPass, createdAt: old}
@@ -258,7 +258,7 @@ func TestTruncatedTCPPacketIsPassedNotPanicked(t *testing.T) {
 			t.Fatalf("truncated packet panicked: %v", r)
 		}
 	}()
-	i.handleIPv4TCP(nil,pkt, &winDivertAddress{}, 20)
+	i.handleIPv4TCP(nil, pkt, &winDivertAddress{}, 20)
 	if i.policies.Size() != 0 {
 		t.Fatal("truncated packet must not create a flow policy")
 	}

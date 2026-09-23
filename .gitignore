@@ -35,3 +35,4 @@ geoip.dat
 .tools/*.dat
 
 # Embedded rule snapshots ARE tracked (internal/engine/rules/*.txt) — do not ignore.
+.claude/
