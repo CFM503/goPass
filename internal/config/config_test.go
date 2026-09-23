@@ -122,3 +122,57 @@ func TestProcessWhitelistRoundTrip(t *testing.T) {
 		t.Fatalf("whitelist roundtrip failed: %v", c2.ProcessWhitelist)
 	}
 }
+
+// B1 回归：raw 里若声明一个同名 performance 字段，它会因深度更浅而遮蔽内嵌的
+// current.Performance，JSON 值落进显式字段、UnmarshalJSON 却读 c.Performance，
+// 导致 config.json 里的 buffer_size 被静默丢弃并回落到默认 64KB（用户看到的现象
+// 是“设置页保存成功、重启后失效”）。
+func TestPerformanceBufferSizeSurvivesLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"performance":{"buffer_size":123456}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Performance.BufferSize != 123456 {
+		t.Fatalf("buffer_size=%d, want 123456 (config.json 的值被丢弃)", c.Performance.BufferSize)
+	}
+}
+
+func TestPerformanceBufferSizeDefaultAndClamp(t *testing.T) {
+	// 缺省时才回落默认值。
+	absent := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(absent, []byte(`{"api":{}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(absent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Performance.BufferSize != 64*1024 {
+		t.Fatalf("absent buffer_size=%d, want 65536", c.Performance.BufferSize)
+	}
+
+	// 有值时必须 clamp，而不是被当成 0 走“取默认”分支。
+	for _, tc := range []struct {
+		json string
+		want int
+	}{
+		{`{"performance":{"buffer_size":1024}}`, 32 * 1024},
+		{`{"performance":{"buffer_size":2097152}}`, 1024 * 1024},
+	} {
+		path := filepath.Join(t.TempDir(), "config.json") // 每次都是新的唯一目录
+		if err := os.WriteFile(path, []byte(tc.json), 0644); err != nil {
+			t.Fatal(err)
+		}
+		got, err := Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Performance.BufferSize != tc.want {
+			t.Errorf("%s -> buffer_size=%d, want %d", tc.json, got.Performance.BufferSize, tc.want)
+		}
+	}
+}

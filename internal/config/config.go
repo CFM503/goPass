@@ -66,11 +66,11 @@ func DefaultConfig() *Config {
 
 func (c *Config) UnmarshalJSON(data []byte) error {
 	type current Config
+	// raw 只能内嵌 *current：一旦再声明一个显式 performance 字段，它会因"字段深度更浅"
+	// 而遮蔽内嵌的 current.Performance——JSON 值落进显式字段，下面却读 c.Performance，
+	// 结果 config.json 里的 buffer_size 被静默丢弃、永远回落到默认 64KB。
 	var raw struct {
 		*current
-		Performance *struct {
-			BufferSize int `json:"buffer_size"`
-		} `json:"performance"`
 	}
 	raw.current = (*current)(c)
 	if err := json.Unmarshal(data, &raw); err != nil {
