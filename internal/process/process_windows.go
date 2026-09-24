@@ -238,6 +238,40 @@ func (r *Resolver) Snapshot() []Entry {
 	return out
 }
 
+// maxUTF16Buffer 是给 QueryFullProcessImageNameW 的缓冲上限（UTF-16 字符数）。
+// 翻倍到它仍然失败就收手，与改动前的放弃条件一致。
+const maxUTF16Buffer = 32768
+
+// queryUTF16WithRetry 在 size 个 UTF-16 字符的缓冲上反复调用 call，返回
+// (缓冲区, 写入字符数, 是否成功)。
+//
+// 只有 ERROR_INSUFFICIENT_BUFFER（122）意味着"缓冲不够，加大再来"——这也是唯一
+// 值得重试的失败。其余错误码（访问被拒、参数无效……）加大缓冲毫无意义，立刻返回。
+//
+// 此前 processName 对任何失败都翻倍重取、从不读错误码：一个被拒绝访问的 PID 要
+// 空跑 260→520→…→33280 共 8 轮，每轮一次系统调用加一次分配，最后照样返回 ""。
+// 而它挂在进程名缓存未命中的路径上，refreshTCP/refreshUDP 每行 PID 都要过一遍，
+// 失败的 PID 还会在 TTL 之后反复重来。
+func queryUTF16WithRetry(size int, call func(buf []uint16, need *uint32) (bool, error)) ([]uint16, uint32, bool) {
+	for {
+		buf := make([]uint16, size)
+		need := uint32(size)
+		ok, err := call(buf, &need)
+		if ok {
+			// 成功路径上 *need 是写出的字符数，理论上不会超过缓冲长度；
+			// 但这里一旦越界，下面的切片会直接 panic 掉整个代理，所以先夹一下。
+			if need > uint32(len(buf)) {
+				need = uint32(len(buf))
+			}
+			return buf, need, true
+		}
+		if err != syscall.Errno(errorInsufficientBuffer) || size >= maxUTF16Buffer {
+			return nil, 0, false
+		}
+		size *= 2
+	}
+}
+
 func processName(pid uint32) string {
 	if pid == 0 {
 		return ""
@@ -248,22 +282,18 @@ func processName(pid uint32) string {
 	}
 	h := windows.Handle(ret)
 	defer closeHandle.Call(ret)
-	buf := make([]uint16, windows.MAX_PATH)
-	for {
-		n := uint32(len(buf))
-		ok, _, _ := queryProcessName.Call(uintptr(h), 0, uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&n)))
-		if ok != 0 {
-			path := syscall.UTF16ToString(buf[:n])
-			if p := strings.LastIndexAny(path, `\\/`); p >= 0 {
-				return path[p+1:]
-			}
-			return path
-		}
-		if len(buf) >= 32768 {
-			return ""
-		}
-		buf = make([]uint16, len(buf)*2)
+	buf, n, ok := queryUTF16WithRetry(windows.MAX_PATH, func(b []uint16, need *uint32) (bool, error) {
+		r, _, err := queryProcessName.Call(uintptr(h), 0, uintptr(unsafe.Pointer(&b[0])), uintptr(unsafe.Pointer(need)))
+		return r != 0, err
+	})
+	if !ok {
+		return ""
 	}
+	path := syscall.UTF16ToString(buf[:n])
+	if p := strings.LastIndexAny(path, `\\/`); p >= 0 {
+		return path[p+1:]
+	}
+	return path
 }
 
 func ntohs(v uint16) uint16 { return v<<8 | v>>8 }

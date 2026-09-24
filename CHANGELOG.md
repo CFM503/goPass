@@ -1,7 +1,9 @@
 # GoPass Changelog
 
-- **移除两项从未生效的配置**：`api.ws_refresh_interval` 与 `api.ui_conn_limit` 没有任何读者——设置页拉取的 `/api/settings` 路由从来就不存在，写入它们的 `UpdateUIConfig` 也零调用方，状态页轮询间隔实为 JS 里写死的 3 秒。字段从 schema 中删除；旧配置文件里的同名键会被 `encoding/json` 安全忽略，无需迁移。
-- **CI**：`release.yml` 分支构建的版本兜底字符串同步到 v1.8.3。
+## Unreleased
+
+- **修复白名单页的 JS 注入**：`renderProcesses` 把进程名插进内联 `onclick="removeProcess('${…}')"`——`esc()` 只做 HTML 层转义，`&#39;` 会被浏览器按 HTML 规则还原成 `'` 之后才交给 JS 引擎，于是进程名里的单引号逃出了字符串字面量。进程名 `');window.__xss=1;//` 在点击删除时会执行任意 JS；`Don't Starve.exe` 这类真实存在的名字则直接语法错误、按钮报废。改用同页 `renderStatuses` 已在用的 `data-process` 属性 + `addEventListener`：属性值没有第二道解码，读回来就是原文。
+- **进程名查询不再空转**：`processName` 从不读 `QueryFullProcessImageNameW` 的错误码，任何失败一律翻倍重取缓冲——一个被拒绝访问的 PID 要空跑 260→520→…→33280 共 8 轮系统调用加 8 次分配，最后照样返回空；它挂在进程名缓存未命中的路径上，刷新循环每行 PID 都要过一遍。现在只有 `ERROR_INSUFFICIENT_BUFFER`(122) 才重试，其余错误码立刻收手，并夹住成功时回填的长度，避免越界切片 panic。
 
 ## v1.8.3
 
@@ -9,17 +11,17 @@
 - **改密码立即生效**：凭据参与 dialer 缓存键，上游配置（含账号密码）变化时重建连接器，不再复用旧的；键用 NUL 分隔，地址与凭据不会互相冒充。设置页热更新只覆写类型/地址/端口，保留已配置的账号密码并重新下发。
 - **`buffer_size` 设置不再重启失效**：`config.json` 的 `performance.buffer_size` 此前被静默丢弃——`UnmarshalJSON` 里一个显式同名字段因“深度更浅”遮蔽了内嵌字段，值落进显式字段、代码却读内嵌字段，恒为 0 后回落默认 64KB。现象是设置页保存成功、重启后失效。现在读回真实值并按 32KB–1MB 正常收敛。
 - **IPv6 进程识别真正生效**：解析 `GetExtendedTcpTable` 的 IPv6 TCP 行时整体错位 4 字节（照搬了 IPv4 “`dwState` 在行首”的布局，而该结构的 `dwState` 实际在 offset 48，只有 `dwOwningPid` 恰好没错位），流量键永远匹配不上——白名单进程的 IPv6 TCP 从未被阻断，可绕过代理走 IPv6 直连。现在按 `tcpmib.h` 的真实布局解析；解析逻辑拆成独立函数并由新增单测逐字段钉死。
-
 - **白名单并发增删不再丢变更**：`POST/DELETE /api/process-whitelist` 此前是「先读整份白名单→就地改→写回整份」，两个并发请求会基于同一份快照各改各的，后写者整份覆盖先写者，先到的那次增删静默消失（保存失败的错误也被丢弃，界面上无从察觉）。现在读-改-写收进引擎同一把锁内完成，32 个并发添加实测保留 32 条。
 - **配置并发保存不再互相破坏**：多个请求同时保存 `config.json` 时全都往同一个 `config.json.tmp` 里写——互相截断、长度不一致就拼出杂交内容，后到的 rename 还会因源文件已被前一个移走而报错（Windows 上对同一目标的并发 `MoveFileEx` 直接返回 Access denied）。两条路径的结局都是「界面提示保存成功、磁盘上却是损坏的 JSON，下次启动按损坏处理并清空白名单」。现在每次保存使用独立的临时文件，并把「写临时文件→原子替换」整体串行化。
 - **IPv6 阻断记录不再永久堆积**：只有观察到 FIN/RST 才会被清除的 IPv6 阻断记录，对被阻断的流而言永远等不到握手完成，因此会无限累积；现在增加 5 分钟 TTL 作为兜底，能观察到 FIN/RST 的仍然立即清除。
 - **进程表尺寸竞态不再丢整轮识别**：`GetExtendedTcpTable`/`GetExtendedUdpTable` 是「先问尺寸、再取数据」的两段式调用，两次调用之间表变长时第二步返回 `ERROR_INSUFFICIENT_BUFFER`(122) 并带上新尺寸，而四个调用点此前都直接放弃本轮——数据包路径上的同步兜底一旦失败，这一条流就落回「未定型」，白名单程序悄悄走直连且状态页毫无异样。现在按返回的新尺寸重取，尺寸不变大或超过重试上限即停止，不会空转。
 - **Web 控制台优雅关闭**：`StartServer` 改为先绑定端口并把 `*http.Server` 交回调用方，退出时先停 API（最多给 3 秒让在途请求收尾，例如正在写配置的保存），再停引擎，避免进程退出把请求拦腰截断；绑定失败仍以错误返回，服务期间出错只记日志，代理不受影响。
-
 - **删除失效的设置页拉取**：前端 `loadSettings()` 请求的 `/api/settings` 路由从来就不存在，每次必然 404 后被 `catch` 吞掉，是个恒为空操作；连同它唯一写入、却从未被任何代码读过的 `uiConnLimit` 一并删除。
 - **清理三处无调用方的引擎接口**：`ResetConfig`、`UpdateUIConfig`、`Stats.GetActive` 全仓库零调用方。
 - **数据面去掉只写不读的字节计数**：`Stats.RxBytes/TxBytes` 只有写入、没有读者（唯一读 `Stats` 的地方只取 `PID` 与 `Connections`）。删掉字段后，`relay` 外层包的 `writerConn`、按方向传的 `tx` 标记以及 `sync/atomic` 引用一并消失，转发直接走 `io.CopyBuffer`，少一次接口包装与两次原子加法；基准仍是 0 alloc。
 - **移除 `refreshUDP` 的空循环**：该循环两个分支都不做事（`!ok` 分支 `continue` 到循环末尾，`ok` 分支不进 `if`），等于把 `pidCache` 白遍历一遍；`pidCache` 的清理本就由 `refreshTCP` 负责，连同为它服务的 `seenPIDs` 一并删除。
+- **移除两项从未生效的配置**：`api.ws_refresh_interval` 与 `api.ui_conn_limit` 没有任何读者——设置页拉取的 `/api/settings` 路由从来就不存在，写入它们的 `UpdateUIConfig` 也零调用方，状态页轮询间隔实为 JS 里写死的 3 秒。字段从 schema 中删除；旧配置文件里的同名键会被 `encoding/json` 安全忽略，无需迁移。
+- **CI**：`release.yml` 分支构建的版本兜底字符串同步到 v1.8.3。
 
 ## v1.8.2
 
