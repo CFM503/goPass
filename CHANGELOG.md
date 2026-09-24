@@ -1,6 +1,6 @@
 # GoPass Changelog
 
-## Unreleased
+## v1.8.4
 
 - **修复白名单页的 JS 注入**：`renderProcesses` 把进程名插进内联 `onclick="removeProcess('${…}')"`——`esc()` 只做 HTML 层转义，`&#39;` 会被浏览器按 HTML 规则还原成 `'` 之后才交给 JS 引擎，于是进程名里的单引号逃出了字符串字面量。进程名 `');window.__xss=1;//` 在点击删除时会执行任意 JS；`Don't Starve.exe` 这类真实存在的名字则直接语法错误、按钮报废。改用同页 `renderStatuses` 已在用的 `data-process` 属性 + `addEventListener`：属性值没有第二道解码，读回来就是原文。
 - **进程名查询不再空转**：`processName` 从不读 `QueryFullProcessImageNameW` 的错误码，任何失败一律翻倍重取缓冲——一个被拒绝访问的 PID 要空跑 260→520→…→33280 共 8 轮系统调用加 8 次分配，最后照样返回空；它挂在进程名缓存未命中的路径上，刷新循环每行 PID 都要过一遍。现在只有 `ERROR_INSUFFICIENT_BUFFER`(122) 才重试，其余错误码立刻收手，并夹住成功时回填的长度，避免越界切片 panic。

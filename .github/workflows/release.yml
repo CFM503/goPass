@@ -68,7 +68,7 @@ jobs:
           $env:GOOS = "windows"
           $env:GOARCH = "amd64"
           go build -ldflags="-s -w" -o gopass.exe ./cmd/gopass
-          $version = if ($env:GITHUB_REF_NAME -match '^v') { $env:GITHUB_REF_NAME } else { 'v1.8.3' }
+          $version = if ($env:GITHUB_REF_NAME -match '^v') { $env:GITHUB_REF_NAME } else { 'v1.8.4' }
           $versioned = "gopass_" + $version.TrimStart('v') + ".exe"
           Copy-Item gopass.exe $versioned
           Get-Item gopass.exe, $versioned | Select-Object Name, Length
