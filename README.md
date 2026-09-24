@@ -1,4 +1,4 @@
-# GoPass 1.8.4
+# GoPass 1.9.0
 
 GoPass is a Windows **process-whitelist transparent TCP proxy**. Its job is intentionally narrow: detect TCP connections belonging to whitelisted processes, transparently intercept IPv4 TCP traffic, and forward those connections through one configured upstream SOCKS5 or HTTP CONNECT proxy.
 
@@ -95,4 +95,4 @@ GoPass 需要管理员权限运行，因为 WinDivert 需要提升权限。
 
 ## 更新日志
 
-各版本的变更记录见 [CHANGELOG.md](CHANGELOG.md)。当前版本：**v1.8.4**。
+各版本的变更记录见 [CHANGELOG.md](CHANGELOG.md)。当前版本：**v1.9.0**。
