@@ -348,7 +348,11 @@ func(i *Interceptor)handleIPv6TCP(q *sendQueue,pkt []byte,addr *winDivertAddress
 		return name,true
 	})
 	if kind==policyIntercept{i.policies.Set(key,policyIntercept,0);return}
-	i.policies.Set(key,policyPass,0)
+	// 非劫持分支必须原样保存 kind。写死 policyPass 会让上面那句
+	// "undecided + 纯 SYN 才允许重新评估" 的判定永远为假（IPv4 走的就是原样 kind）：
+	// 首包 SYN 恰好查不到进程时，这条流会被永久定型为直连，
+	// 白名单程序便绕过了"阻断回落 IPv4 再劫持"这条路。
+	i.policies.Set(key,kind,0)
 	i.sendPass(q,pkt,addr)
 }
 func(i *Interceptor)handleIPv6UDP(q *sendQueue,pkt []byte,addr *winDivertAddress){if len(pkt)<48{i.sendPass(q,pkt,addr);return};dstPort:=binary.BigEndian.Uint16(pkt[42:44]);if dstPort!=443{i.sendPass(q,pkt,addr);return};var dst6 [16]byte;copy(dst6[:],pkt[24:40]);if isPrivateOrLocalV6(dst6[:]){i.sendPass(q,pkt,addr);return};var localIP [16]byte;copy(localIP[:],pkt[8:24]);srcPort:=binary.BigEndian.Uint16(pkt[40:42]);name,ok:=process.LookupIPv6UDP(process.IPv6UDPFlow{LocalIP:localIP,LocalPort:srcPort});if !ok{process.RefreshIPv6UDP();name,ok=process.LookupIPv6UDP(process.IPv6UDPFlow{LocalIP:localIP,LocalPort:srcPort})};if ok&&i.isWhitelisted(name){return};i.sendPass(q,pkt,addr)}

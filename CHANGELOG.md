@@ -1,5 +1,9 @@
 # GoPass Changelog
 
+## Unreleased
+
+- **IPv6 首包识别失败不再永久绕过代理**：`handleIPv6TCP` 此前把所有非阻断结果一律写成 `policyPass`（IPv4 同位置写的是原样 `kind`），于是 `policyUndecided` 在 IPv6 侧从未落过表——同一函数里「只有 undecided + 纯 SYN 才允许重新评估」的重试条件因此永远为假。首包 SYN 恰好没在 TCP 表里查到进程（这正是该重试机制要兜的竞态）时，白名单程序的这条流被永久定型为直连，后续 SYN 重传不再重判，于是它绕过了「IPv6 阻断 → 回落 IPv4 → 被劫持到代理」这条路而直连上网；同样的竞态 IPv4 侧能重试成功。现在与 IPv4 一致地原样保存 `kind`：中途 ACK 仍走原有放行分支、不会改道已建立的连接，`policyUndecided` 记录由 `flowPolicies` 的默认分支按 15 分钟 TTL 清理，不会驻留。
+
 ## v1.8.4
 
 - **修复白名单页的 JS 注入**：`renderProcesses` 把进程名插进内联 `onclick="removeProcess('${…}')"`——`esc()` 只做 HTML 层转义，`&#39;` 会被浏览器按 HTML 规则还原成 `'` 之后才交给 JS 引擎，于是进程名里的单引号逃出了字符串字面量。进程名 `');window.__xss=1;//` 在点击删除时会执行任意 JS；`Don't Starve.exe` 这类真实存在的名字则直接语法错误、按钮报废。改用同页 `renderStatuses` 已在用的 `data-process` 属性 + `addEventListener`：属性值没有第二道解码，读回来就是原文。
