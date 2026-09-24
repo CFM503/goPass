@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/CFM503/goPass/internal/config"
 	"github.com/CFM503/goPass/internal/engine"
@@ -96,7 +97,33 @@ func StartServer(addr string, eng *engine.Engine, configPath string) (*http.Serv
 	mux.HandleFunc("/api/process-whitelist", s.handleProcessWhitelist)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil { return nil, err }
-	srv := &http.Server{Addr: addr, Handler: guard(addr, mux)}
+	// 进站设超时，出站不设。
+	//
+	// http.Server 这四个字段默认全是 0（无限），等于把连接的生命周期完全交给
+	// 对端，本机上任何能连到这个端口的进程（或畸形客户端）都能无限期占着
+	// goroutine 和 socket：
+	//
+	//   - 缺 ReadHeaderTimeout → Slowloris：连接开着、请求头一个字节一个字节
+	//     地送。Go 文档点名要这个字段来防，是四者里唯一真正致命的。
+	//   - 缺 ReadTimeout       → 请求体慢慢滴灌，handler 卡在 Decode 上不回来。
+	//   - 缺 IdleTimeout       → keep-alive 连接空闲多久都不回收。
+	//
+	// 这三项都只约束"读"，本机 UI 不可能踩到：浏览器的请求头和几百字节的 JSON
+	// 体都是瞬间写完的；状态轮询每 3 秒一次，远够不到 60 秒空闲上限，即便标签
+	// 页进后台导致轮询暂停、连接被回收，下一次 fetch 也只是悄悄新开一条，页面
+	// 无感知。
+	//
+	// WriteTimeout 刻意保持 0：它约束"handler 执行 + 回包"的总时长，设了就等于
+	// 允许把响应拦腰切断——磁盘卡顿时会出现配置已写成功、界面却报"保存失败"
+	// 的矛盾。本服务的响应只有几百字节，内核缓冲区直接收下，慢读的客户端占不
+	// 到什么便宜，拿这种风险去换一层几乎无收益的防护不划算。
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           guard(addr, mux),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("API 服务器错误: %v", err)
