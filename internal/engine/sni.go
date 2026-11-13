@@ -24,6 +24,7 @@ func ExtractSNI(data []byte) (string, error) {
 	if msgLen < 34 || 4+msgLen > len(rest) {
 		return "", fmt.Errorf("incomplete ClientHello")
 	}
+	rest = rest[:4+msgLen]
 
 	// Handshake header + legacy_version + random.
 	offset := 4 + 2 + 32

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -78,7 +79,7 @@ type TProxy struct {
 }
 
 func NewTProxy(tracker *ConnTracker, proxyType, proxyAddr, proxyUser, proxyPass string, stats *Stats, perf config.PerformanceConfig, tproxyPort int) (*TProxy, error) {
-	ln, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", tproxyPort))
+	ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(tproxyPort)))
 	if err != nil { return nil, fmt.Errorf("TProxy listen failed: %w", err) }
 	return &TProxy{
 		listener: ln,
@@ -106,13 +107,13 @@ func (tp *TProxy) Accept() {
 	for {
 		conn, err := tp.listener.Accept()
 		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Temporary() {
-				if tempDelay == 0 { tempDelay = 5 * time.Millisecond } else { tempDelay *= 2 }
-				if tempDelay > time.Second { tempDelay = time.Second }
-				time.Sleep(tempDelay)
-				continue
+			if errors.Is(err, net.ErrClosed) {
+				return
 			}
-			return
+			if tempDelay == 0 { tempDelay = 5 * time.Millisecond } else { tempDelay *= 2 }
+			if tempDelay > time.Second { tempDelay = time.Second }
+			time.Sleep(tempDelay)
+			continue
 		}
 		tempDelay = 0
 		go tp.handleConn(conn)
@@ -141,7 +142,11 @@ func (tp *TProxy) handleConn(conn net.Conn) {
 	// correct routing; dialing the intercepted IP alone is not equivalent.
 	var peekBuf []byte
 	if target.OrigDstPort == 443 {
-		if data, sni, sniffErr := readTLSClientHello(conn); len(data) > 0 {
+		data, sni, sniffErr := readTLSClientHello(conn)
+		if len(data) == 0 && errors.Is(sniffErr, io.EOF) {
+			return
+		}
+		if len(data) > 0 {
 			peekBuf = data
 			if sniffErr == nil && sni != "" {
 				targetAddr = net.JoinHostPort(sni, strconv.Itoa(int(target.OrigDstPort)))
@@ -207,7 +212,7 @@ func relay(src, dst net.Conn, size int) relayResult {
 	defer putRelayBuffer(buf)
 	n, err := io.CopyBuffer(dst, src, buf)
 	if err == nil || err == io.EOF {
-		if tc, ok := dst.(*net.TCPConn); ok { _ = tc.CloseWrite() }
+		if cw, ok := dst.(interface{ CloseWrite() error }); ok { _ = cw.CloseWrite() }
 	}
 	return relayResult{n: n, err: err}
 }

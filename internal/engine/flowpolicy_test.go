@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"bytes"
 	"encoding/binary"
+	"net"
 	"testing"
 	"time"
 
@@ -279,5 +281,75 @@ func TestInterceptorStateDefaultsToStopped(t *testing.T) {
 	st, msg = i.State()
 	if st != stateError || msg != "boom" {
 		t.Fatalf("state=%q msg=%q, want error/boom", st, msg)
+	}
+}
+
+// 回归：已劫持连接的 FIN/RST 必须继续改写发往 TProxy，绝不能删除策略并 sendPass 漏向公网。
+func TestHijackedFlowFINAndRSTAreHijackedNotLeaked(t *testing.T) {
+	i := newTestInterceptor(t, "chrome.exe")
+	origSrc := net.IPv4(192, 168, 1, 5)
+	origDst := net.IPv4(8, 8, 8, 8)
+	mapped, ok := i.tracker.Set(origSrc, 50080, origDst, 443, 1, 0)
+	if !ok {
+		t.Fatal("tracker.Set failed")
+	}
+	key := flowKeyV4(testSrcIP(), testDstIP(), 50080, 443)
+	i.policies.Set(key, policyIntercept, mapped)
+
+	for _, flags := range []byte{tcpFIN | tcpACK, tcpRST} {
+		pkt := buildTCPPacket(testSrcIP(), testDstIP(), 50080, 443, flags)
+		q := newSendQueue()
+		i.handleIPv4TCP(q, pkt, &winDivertAddress{}, 20)
+
+		// 必须走 rewriteHijack -> calcAndSend（单测无句柄故未入 sendQueue），
+		// 绝不能走 sendPass 把未改写的 FIN/RST 漏向公网。
+		if q.count() != 0 {
+			t.Fatalf("flags=%#x leaked via sendPass (q.count=%d)", flags, q.count())
+		}
+		if !bytes.Equal(pkt[12:16], loopbackV4) || !bytes.Equal(pkt[16:20], loopbackV4) {
+			t.Fatalf("flags=%#x was not rewritten to loopback: src=%v dst=%v", flags, pkt[12:16], pkt[16:20])
+		}
+		if gotPort := binary.BigEndian.Uint16(pkt[20:22]); gotPort != mapped {
+			t.Fatalf("flags=%#x rewritten srcPort=%d, want %d", flags, gotPort, mapped)
+		}
+		if kind, m, exists := i.policies.Get(key); !exists || kind != policyIntercept || m != mapped {
+			t.Fatalf("policy prematurely removed/changed: exists=%v kind=%v mapped=%d", exists, kind, m)
+		}
+	}
+}
+
+// 回归：TProxy 关闭连接并删掉 ConnTracker 映射后，迟到的非 SYN 包不得分配新的僵尸映射端口，
+// 而端口复用的新 SYN 必须清除旧策略并重新评估。
+func TestHijackedFlowAfterTrackerDelete(t *testing.T) {
+	i := newTestInterceptor(t) // 白名单为空
+	lookups := 0
+	i.lookupName = func(process.Flow) (string, bool) { lookups++; return "other.exe", true }
+
+	key := flowKeyV4(testSrcIP(), testDstIP(), 50081, 443)
+	i.policies.Set(key, policyIntercept, 40123) // 40123 不在 tracker 中，模拟 TProxy 已退出
+
+	// 迟到的 ACK：必须删策略并丢弃，不能新建 ConnTracker 记录也不能漏向公网
+	q := newSendQueue()
+	i.handleIPv4TCP(q, buildTCPPacket(testSrcIP(), testDstIP(), 50081, 443, tcpACK), &winDivertAddress{}, 20)
+	if q.count() != 0 {
+		t.Fatalf("late ACK on closed hijacked flow should be dropped, q.count=%d", q.count())
+	}
+	if _, _, exists := i.policies.Get(key); exists {
+		t.Fatal("stale intercept policy should be deleted")
+	}
+	i.tracker.mu.RLock()
+	trackerLen := len(i.tracker.entries)
+	i.tracker.mu.RUnlock()
+	if trackerLen != 0 {
+		t.Fatalf("late ACK allocated %d zombie conntrack entries", trackerLen)
+	}
+
+	// 同五元组端口复用的新 SYN：应重新评估并按当前策略放行
+	i.handleIPv4TCP(q, buildTCPPacket(testSrcIP(), testDstIP(), 50081, 443, tcpSYN), &winDivertAddress{}, 20)
+	if lookups != 1 {
+		t.Fatalf("reused SYN should evaluate fresh, lookups=%d", lookups)
+	}
+	if q.count() != 1 {
+		t.Fatalf("non-whitelisted reused SYN should pass, q.count=%d", q.count())
 	}
 }

@@ -3,6 +3,7 @@
 package process
 
 import (
+	"encoding/binary"
 	"fmt"
 	"strings"
 	"sync"
@@ -43,11 +44,12 @@ type pidCacheEntry struct {
 }
 
 type Resolver struct {
-	mu        sync.RWMutex
-	flows     map[Flow]Entry
-	udpFlows  map[UDPFlow]UDPEntry
-	pidCache  map[uint32]pidCacheEntry
+	mu         sync.RWMutex
+	flows      map[Flow]Entry
+	udpFlows   map[UDPFlow]UDPEntry
+	pidCache   map[uint32]pidCacheEntry
 	fallbackMu sync.Mutex
+	refreshMu  sync.Mutex
 }
 
 var (
@@ -77,9 +79,11 @@ func NewResolver() *Resolver {
 }
 
 func (r *Resolver) Refresh() error {
+	r.refreshMu.Lock()
+	defer r.refreshMu.Unlock()
 	tcpErr := r.refreshTCP()
-	// UDP is intentionally refreshed together with the existing 250ms TCP
-	// snapshot. This keeps UDP/443 process lookup O(1) in the packet hot path
+	// UDP is intentionally refreshed together with the existing TCP snapshot.
+	// This keeps UDP/443 process lookup O(1) in the packet hot path
 	// without adding a second timer or per-packet Windows table syscall.
 	_ = r.refreshUDP()
 	return tcpErr
@@ -90,17 +94,16 @@ func (r *Resolver) refreshTCP() error {
 	if err != nil {
 		return fmt.Errorf("GetExtendedTcpTable: %w", err)
 	}
-	if len(buf) == 0 {
+	if len(buf) < 4 {
 		r.mu.Lock()
 		r.flows = make(map[Flow]Entry)
 		r.mu.Unlock()
 		return nil
 	}
-	count := *(*uint32)(unsafe.Pointer(&buf[0]))
-	rowSize := uint32(24)
+	count := binary.LittleEndian.Uint32(buf[0:4])
+	const rowSize = uint32(24)
 	now := time.Now()
 	flows := make(map[Flow]Entry, count)
-	seenPIDs := make(map[uint32]struct{})
 
 	for idx := uint32(0); idx < count; idx++ {
 		off := 4 + idx*rowSize
@@ -108,24 +111,23 @@ func (r *Resolver) refreshTCP() error {
 			break
 		}
 		row := buf[off : off+rowSize]
-		state := *(*uint32)(unsafe.Pointer(&row[0]))
+		state := binary.LittleEndian.Uint32(row[0:4])
 		if state == 1 {
 			continue
 		}
-		localIP := *(*uint32)(unsafe.Pointer(&row[4]))
-		localPort := ntohs(uint16(*(*uint32)(unsafe.Pointer(&row[8]))))
-		remoteIP := *(*uint32)(unsafe.Pointer(&row[12]))
-		remotePort := ntohs(uint16(*(*uint32)(unsafe.Pointer(&row[16]))))
-		pid := *(*uint32)(unsafe.Pointer(&row[20]))
-		seenPIDs[pid] = struct{}{}
+		localIP := binary.LittleEndian.Uint32(row[4:8])
+		localPort := ntohs(uint16(binary.LittleEndian.Uint32(row[8:12])))
+		remoteIP := binary.LittleEndian.Uint32(row[12:16])
+		remotePort := ntohs(uint16(binary.LittleEndian.Uint32(row[16:20])))
+		pid := binary.LittleEndian.Uint32(row[20:24])
 		name := r.cachedProcessName(pid, now)
 		flow := Flow{LocalIP: localIP, LocalPort: localPort, RemoteIP: remoteIP, RemotePort: remotePort}
 		flows[flow] = Entry{Flow: flow, PID: pid, Name: name}
 	}
 
 	r.mu.Lock()
-	for pid := range r.pidCache {
-		if _, ok := seenPIDs[pid]; !ok {
+	for pid, e := range r.pidCache {
+		if now.Sub(e.checkedAt) >= pidNameCacheTTL {
 			delete(r.pidCache, pid)
 		}
 	}
@@ -139,14 +141,14 @@ func (r *Resolver) refreshUDP() error {
 	if err != nil {
 		return fmt.Errorf("GetExtendedUdpTable: %w", err)
 	}
-	if len(buf) == 0 {
+	if len(buf) < 4 {
 		r.mu.Lock()
 		r.udpFlows = make(map[UDPFlow]UDPEntry)
 		r.mu.Unlock()
 		return nil
 	}
-	count := *(*uint32)(unsafe.Pointer(&buf[0]))
-	rowSize := uint32(12)
+	count := binary.LittleEndian.Uint32(buf[0:4])
+	const rowSize = uint32(12)
 	now := time.Now()
 	flows := make(map[UDPFlow]UDPEntry, count)
 
@@ -156,17 +158,14 @@ func (r *Resolver) refreshUDP() error {
 			break
 		}
 		row := buf[off : off+rowSize]
-		localIP := *(*uint32)(unsafe.Pointer(&row[0]))
-		localPort := ntohs(uint16(*(*uint32)(unsafe.Pointer(&row[4]))))
-		pid := *(*uint32)(unsafe.Pointer(&row[8]))
+		localIP := binary.LittleEndian.Uint32(row[0:4])
+		localPort := ntohs(uint16(binary.LittleEndian.Uint32(row[4:8])))
+		pid := binary.LittleEndian.Uint32(row[8:12])
 		name := r.cachedProcessName(pid, now)
 		flow := UDPFlow{LocalIP: localIP, LocalPort: localPort}
 		flows[flow] = UDPEntry{Flow: flow, PID: pid, Name: name}
 	}
 
-	// pidCache 的清理只由 refreshTCP 负责：它按 TCP 表里见过的 PID 删条目。
-	// 这里原先也有一个循环，但两个分支都不做事——!ok 分支 continue 到循环末尾，
-	// ok 分支压根不进 if——等于把 map 白遍历一遍，连同它的 seenPIDs 一起删掉。
 	r.mu.Lock()
 	r.udpFlows = flows
 	r.mu.Unlock()

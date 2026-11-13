@@ -140,7 +140,11 @@ func (c *Config) Save(path string) error {
 	if err != nil {
 		return err
 	}
-	dir, base := filepath.Split(path)
+	// filepath.Split("config.json") 会返回空目录 ""，使 os.CreateTemp 在系统
+	// TempDir（如 C:\Users\...\Temp）建文件；若程序位于 D:\ 等非系统盘，后续
+	// os.Rename 会因跨卷移动而报 ERROR_NOT_SAME_DEVICE。改用 filepath.Dir
+	// 对无目录的相对路径返回 "."，保证临时文件与目标同目录同卷。
+	dir, base := filepath.Dir(path), filepath.Base(path)
 	f, err := os.CreateTemp(dir, base+".*.tmp")
 	if err != nil {
 		return err

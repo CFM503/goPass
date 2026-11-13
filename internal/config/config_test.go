@@ -131,6 +131,26 @@ func TestSaveIsAtomic(t *testing.T) {
 	}
 }
 
+// 相对路径（无目录前缀，如默认 -config config.json）的临时文件必须建在当前目录，
+// 否则落在系统 TempDir 会导致跨卷 Rename 失败。
+func TestSaveRelativePathUsesTargetDir(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	c := DefaultConfig()
+	c.ProcessWhitelist = []string{"chrome.exe"}
+	if err := c.Save("config.json"); err != nil {
+		t.Fatalf("Save relative path failed: %v", err)
+	}
+	got, err := Load(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatalf("Load saved config failed: %v", err)
+	}
+	if len(got.ProcessWhitelist) != 1 || got.ProcessWhitelist[0] != "chrome.exe" {
+		t.Fatalf("whitelist=%v, want [chrome.exe]", got.ProcessWhitelist)
+	}
+}
+
 // Save 的失败路径必须把错误如实返回，并且绝不留下 .tmp 残留。
 // 调用方（engine.SaveConfig）是 `_ =` 吞掉错误的，这里再不返回就彻底没救了——
 // 表现成"界面提示保存成功、其实没存上"，正是 B4 要消除的那类静默失败。

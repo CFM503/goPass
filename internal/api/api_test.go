@@ -139,3 +139,34 @@ func TestConcurrentWhitelistEditsAreNotLost(t *testing.T) {
 		}
 	}
 }
+
+func TestDeleteWhitelistDoesNotAddFirstAndReturnsSaveErrors(t *testing.T) {
+	_, s := setupTestEngine(t)
+
+	// 删除不存在的条目应保持白名单为空且只落盘一次。
+	req := httptest.NewRequest(http.MethodDelete, "/api/process-whitelist", bytes.NewBufferString(`{"process":"nope.exe"}`))
+	w := httptest.NewRecorder()
+	s.handleProcessWhitelist(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("DELETE status=%d, want 200", w.Code)
+	}
+	if got := s.engine.GetProcessWhitelist(); len(got) != 0 {
+		t.Fatalf("whitelist after DELETE=%v, want empty", got)
+	}
+
+	// 保存路径不可写时，UpdateUpstream 与 AddProcess 必须返回 500 而不是假成功。
+	s.configPath = filepath.Join(t.TempDir(), "missing-dir", "config.json")
+	reqUp := httptest.NewRequest(http.MethodPost, "/api/upstream", bytes.NewBufferString(`{"type":"socks5","address":"127.0.0.1","port":1080}`))
+	wUp := httptest.NewRecorder()
+	s.handleUpstream(wUp, reqUp)
+	if wUp.Code != http.StatusInternalServerError {
+		t.Fatalf("POST /api/upstream with unwritable path=%d, want 500", wUp.Code)
+	}
+
+	reqWl := httptest.NewRequest(http.MethodPost, "/api/process-whitelist", bytes.NewBufferString(`{"process":"chrome.exe"}`))
+	wWl := httptest.NewRecorder()
+	s.handleProcessWhitelist(wWl, reqWl)
+	if wWl.Code != http.StatusInternalServerError {
+		t.Fatalf("POST /api/process-whitelist with unwritable path=%d, want 500", wWl.Code)
+	}
+}

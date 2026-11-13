@@ -1,4 +1,4 @@
-# GoPass 1.9.0
+# GoPass 1.9.1
 
 GoPass is a Windows **process-whitelist transparent TCP proxy**. Its job is intentionally narrow: detect TCP connections belonging to whitelisted processes, transparently intercept IPv4 TCP traffic, and forward those connections through one configured upstream SOCKS5 or HTTP CONNECT proxy.
 
@@ -57,8 +57,8 @@ GoPass 不提供：
 - GeoIP / GeoSite
 - 域名/IP 分流
 - DNS Relay / Fake-IP
-- SNI 路由判断
-- UDP / QUIC
+- SNI 路由分流判断（仅在 443 端口提取 TLS SNI 域名供上游代理建连）
+- UDP / QUIC 代理转发（仅阻断白名单进程的 UDP/443 QUIC 以促使其回落 TCP）
 - 自动选路、测速、探测、路线评分
 - 多线路和复杂规则系统
 - 其他无关业务逻辑
@@ -95,4 +95,4 @@ GoPass 需要管理员权限运行，因为 WinDivert 需要提升权限。
 
 ## 更新日志
 
-各版本的变更记录见 [CHANGELOG.md](CHANGELOG.md)。当前版本：**v1.9.0**。
+各版本的变更记录见 [CHANGELOG.md](CHANGELOG.md)。当前版本：**v1.9.1**。

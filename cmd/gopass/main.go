@@ -10,7 +10,6 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -90,9 +89,8 @@ func main() {
 		fmt.Println()
 		fmt.Println("GoPass 未启动透明代理，也未启动 Web 控制台。")
 		fmt.Println("请根据上面的错误信息修复环境后重新运行。")
-		fmt.Println("按 Enter 退出；输入 q 后按 Enter 立即退出。")
-		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-		if strings.TrimSpace(line) == "q" { os.Exit(1) }
+		fmt.Println("按 Enter 退出...")
+		_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
 		os.Exit(1)
 	}
 

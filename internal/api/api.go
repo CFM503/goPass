@@ -137,12 +137,21 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet { http.Error(w, "method not allowed", http.StatusMethodNotAllowed); return }
 	pid, conns := 0, 0
 	statuses := []engine.ProcessStatus{}
-	if s.engine != nil && s.engine.Stats != nil { pid, conns = s.engine.Stats.PID, s.engine.Stats.Connections; statuses = s.engine.GetProcessStatuses() }
+	tproxyPort, listenAddr := 0, ""
+	if s.engine != nil {
+		if s.engine.Stats != nil {
+			pid, conns = s.engine.Stats.Snapshot()
+		}
+		statuses = s.engine.GetProcessStatuses()
+		c := s.engine.GetConfig()
+		tproxyPort = c.System.TProxyPort
+		listenAddr = c.API.ListenAddr
+	}
 	proxyPrograms, directPrograms, proxyConnections, directConnections := 0, 0, 0, 0
 	for _, p := range statuses { if p.Status == "proxy" { proxyPrograms++; proxyConnections += p.Connections } else { directPrograms++; directConnections += p.Connections } }
 	istate, imsg := "stopped", "拦截器未启动"
 	if s.engine != nil { istate, imsg = s.engine.InterceptorState() }
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{"status":"running","interceptor":istate,"interceptor_msg":imsg,"pid":pid,"connections":conns,"proxy_programs":proxyPrograms,"direct_programs":directPrograms,"proxy_connections":proxyConnections,"direct_connections":directConnections,"processes":statuses})
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"status":"running","interceptor":istate,"interceptor_msg":imsg,"pid":pid,"connections":conns,"proxy_programs":proxyPrograms,"direct_programs":directPrograms,"proxy_connections":proxyConnections,"direct_connections":directConnections,"processes":statuses,"tproxy_port":tproxyPort,"listen_addr":listenAddr})
 }
 
 func (s *Server) handleUpstream(w http.ResponseWriter, r *http.Request) {
@@ -153,9 +162,11 @@ func (s *Server) handleUpstream(w http.ResponseWriter, r *http.Request) {
 		c := s.engine.GetConfig(); if len(c.Outbounds.Servers)==0 { _=json.NewEncoder(w).Encode(map[string]interface{}{"type":"","address":"","port":0}); return }
 		x:=c.Outbounds.Servers[0]; _=json.NewEncoder(w).Encode(map[string]interface{}{"type":x.Type,"address":x.Address,"port":x.Port})
 	case http.MethodPost:
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		var req struct{Type string `json:"type"`; Address string `json:"address"`; Port int `json:"port"`}
 		if err:=json.NewDecoder(r.Body).Decode(&req); err!=nil || (req.Type!="socks5" && req.Type!="http") || strings.TrimSpace(req.Address)=="" || req.Port<1 || req.Port>65535 { http.Error(w,"invalid upstream",http.StatusBadRequest); return }
-		s.engine.UpdateUpstream(req.Type,strings.TrimSpace(req.Address),req.Port,s.configPath); _=json.NewEncoder(w).Encode(map[string]interface{}{"status":"ok"})
+		if err:=s.engine.UpdateUpstream(req.Type,strings.TrimSpace(req.Address),req.Port,s.configPath); err!=nil { http.Error(w,"save failed",http.StatusInternalServerError); return }
+		_=json.NewEncoder(w).Encode(map[string]interface{}{"status":"ok"})
 	default: http.Error(w,"method not allowed",http.StatusMethodNotAllowed)
 	}
 }
@@ -167,6 +178,7 @@ func (s *Server) handlePerformance(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		p:=s.engine.GetConfig().Performance; _=json.NewEncoder(w).Encode(map[string]interface{}{"buffer_size":config.ClampBufferSize(p.BufferSize)})
 	case http.MethodPost:
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		var req struct{BufferSize int `json:"buffer_size"`}
 		if err:=json.NewDecoder(r.Body).Decode(&req); err!=nil { http.Error(w,"invalid request",http.StatusBadRequest); return }
 		size:=config.ClampBufferSize(req.BufferSize); s.engine.UpdatePerformance(config.PerformanceConfig{BufferSize:size})
@@ -183,14 +195,21 @@ func (s *Server) handleProcessWhitelist(w http.ResponseWriter, r *http.Request) 
 	case http.MethodGet:
 		_=json.NewEncoder(w).Encode(map[string]interface{}{"processes":s.engine.GetProcessWhitelist()})
 	case http.MethodPost, http.MethodDelete:
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		var req struct{Process string `json:"process"`}
 		if err:=json.NewDecoder(r.Body).Decode(&req); err!=nil || strings.TrimSpace(req.Process)=="" { http.Error(w,"process is required",http.StatusBadRequest); return }
 		// 增删整段交给引擎在一把锁里做"读-改-写"，响应直接用这次落定的结果。
 		// 此处先 Get 再 Update 的话，两个并发请求会基于同一份快照各改各的，
 		// 后写者整份覆盖先写者，静默丢掉一次变更。
 		process:=strings.TrimSpace(req.Process)
-		list:=s.engine.AddProcess(process,s.configPath)
-		if r.Method==http.MethodDelete { list=s.engine.RemoveProcess(process,s.configPath) }
+		var list []string
+		var err error
+		if r.Method==http.MethodDelete {
+			list,err=s.engine.RemoveProcess(process,s.configPath)
+		} else {
+			list,err=s.engine.AddProcess(process,s.configPath)
+		}
+		if err!=nil { http.Error(w,"save failed",http.StatusInternalServerError); return }
 		_=json.NewEncoder(w).Encode(map[string]interface{}{"status":"ok","processes":list})
 	default: http.Error(w,"method not allowed",http.StatusMethodNotAllowed)
 	}

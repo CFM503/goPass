@@ -128,3 +128,20 @@ func TestParseIPv6TCPRowsHandlesTruncatedBuffer(t *testing.T) {
 		}
 	}
 }
+
+// 绑定在 [::]:port 的 IPv6 UDP socket 在内核表里 LocalIP 为全零，
+// 出包查表时拿着具体源 IPv6 地址必须能回退命中。
+func TestIPv6UDPLookupFallsBackToWildcard(t *testing.T) {
+	r := &ipv6UDPResolver{
+		m: map[IPv6UDPFlow]string{
+			{LocalPort: 54321}: "chrome.exe",
+		},
+	}
+	name, ok := r.lookup(IPv6UDPFlow{LocalIP: testLocalIPv6, LocalPort: 54321})
+	if !ok || name != "chrome.exe" {
+		t.Fatalf("wildcard fallback got (%q, %v), want (chrome.exe, true)", name, ok)
+	}
+	if _, ok := r.lookup(IPv6UDPFlow{LocalIP: testLocalIPv6, LocalPort: 9999}); ok {
+		t.Fatal("unbound port must not match")
+	}
+}

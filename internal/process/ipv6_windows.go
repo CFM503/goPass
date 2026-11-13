@@ -46,5 +46,18 @@ type IPv6UDPFlow struct { LocalIP [16]byte; LocalPort uint16 }
 type ipv6UDPResolver struct { mu sync.RWMutex; m map[IPv6UDPFlow]string; gate refreshGate }
 var ipv6UDP = &ipv6UDPResolver{m: make(map[IPv6UDPFlow]string)}
 func RefreshIPv6UDP() { refreshIPv6UDP() }
-func LookupIPv6UDP(flow IPv6UDPFlow) (string, bool) { ipv6UDP.mu.RLock(); name, ok := ipv6UDP.m[flow]; ipv6UDP.mu.RUnlock(); return name, ok }
+func LookupIPv6UDP(flow IPv6UDPFlow) (string, bool) { return ipv6UDP.lookup(flow) }
+
+// lookup 查表时若精确的本机 IPv6 地址未命中，回退到未指定地址 [::]（全零）：
+// 浏览器等应用的 QUIC UDP socket 通常绑定在 [::]:port，而数据包携带具体网卡源地址。
+func (r *ipv6UDPResolver) lookup(flow IPv6UDPFlow) (string, bool) {
+	r.mu.RLock()
+	name, ok := r.m[flow]
+	if !ok && flow.LocalIP != ([16]byte{}) {
+		name, ok = r.m[IPv6UDPFlow{LocalPort: flow.LocalPort}]
+	}
+	r.mu.RUnlock()
+	return name, ok
+}
+
 func refreshIPv6UDP() { ipv6UDP.refreshWith(liveIPv6UDPDeps()) }

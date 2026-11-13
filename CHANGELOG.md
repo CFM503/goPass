@@ -1,5 +1,14 @@
 # GoPass Changelog
 
+## v1.9.1
+
+- **修复已劫持 TCP 连接的 `FIN`/`RST` 泄露**：`handleIPv4TCP` 对 `ConnTracker` 映射仍存活的已劫持流不再在收到 `FIN`/`RST` 时删策略并直接 `sendPass` 漏向公网，而是继续劫持交给 TProxy 完成正常半关闭/复位；映射失效后仅对端口复用的新 `SYN` 重判，迟到非 `SYN` 尾包直接丢弃而不分配僵尸端口。
+- **修复相对路径配置在非系统盘保存失败**：`config.Save` 改用 `filepath.Dir`/`filepath.Base`，使 `-config config.json` 等相对路径的临时文件建在目标同目录同卷，避免落入系统 TempDir 后触发跨卷重命名失败（`ERROR_NOT_SAME_DEVICE`）。
+- **修复退出卸载 DLL 竞态与 `Stats.Connections` 数据竞争**：`Interceptor` 增加后台协程等待与句柄关闭一次性同步，确保 `Engine.Stop` 等待收包与刷新协程完全退出后再卸载 `WinDivert.dll`；`Stats` 新增带锁 `Snapshot()` 供 `/api/status` 读取。
+- **修复 IPv6 QUIC 通配监听匹配与进程表并发刷新**：`LookupIPv6UDP` 增加 `[::]` 未指定地址回退以拦截绑定通配地址的 IPv6 UDP/443 QUIC；统一由 `Resolver.fallbackMu`/`refreshMu` 串行化兜底与表刷新，`pidCache` 改按 TTL 清理并去除非对齐指针强转。
+- **修复白名单删除双写与保存错误静默吞掉**：`DELETE /api/process-whitelist` 不再先调 `AddProcess` 再调 `RemoveProcess`；`UpdateUpstream`、`AddProcess`、`RemoveProcess` 透传保存错误并返回 HTTP 500；API 请求体增加 1 MB 上限。
+- **安全与细节加固**：`NewTProxy` 收敛至 `127.0.0.1` 监听，`BufferedConn` 支持 `CloseWrite()` 半关闭，新增自身 PID/可执行文件名自环回放行，`winDivertDir` 优先取程序所在目录；Web UI 动态展示 `tproxy_port`/`listen_addr`、对齐默认 buffer 兜底值 `65536` 并消除首次加载白名单竞态；清理废弃 `.tools/download.ps1` 并修正 README/CI 说明。
+
 ## v1.9.0
 
 - **本版为稳定版**：自 v1.8 系列起累计推进的稳定性、安全、性能与清理修复至此全部收口——五个批次（稳定/安全/性能/清理/测试）的台账条目清零，并补上引擎关键路径的回归测试：`internal/engine` 语句覆盖率由 32.5% 升至 48.1%，`go build`、`go vet`、`go test ./...` 全绿，CI 另行执行 `-race`。定位为可长期驻留的稳定版本。

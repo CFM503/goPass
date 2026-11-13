@@ -20,6 +20,7 @@ type Engine struct {
 	tproxy *TProxy
 	interceptor *Interceptor
 	Stats *Stats
+	wg sync.WaitGroup
 }
 
 type Stats struct {
@@ -55,6 +56,13 @@ func (s *Stats) RemoveActiveConn(id string) {
 	s.mu.Unlock()
 }
 
+func (s *Stats) Snapshot() (int, int) {
+	s.mu.RLock()
+	pid, conns := s.PID, s.Connections
+	s.mu.RUnlock()
+	return pid, conns
+}
+
 func New(cfg *config.Config) (*Engine, error) {
 	stats := &Stats{PID: os.Getpid(), active: make(map[string]map[string]interface{})}
 	return &Engine{
@@ -75,7 +83,7 @@ func (e *Engine) Start() error {
 	proxyAddr, proxyType, proxyUser, proxyPass := "", "", "", ""
 	for _, srv := range e.cfg.Outbounds.Servers {
 		if srv.Type == "socks5" || srv.Type == "http" {
-			proxyAddr = fmt.Sprintf("%s:%d", srv.Address, srv.Port)
+			proxyAddr = net.JoinHostPort(srv.Address, strconv.Itoa(srv.Port))
 			proxyType = srv.Type
 			// 上游账号密码必须一起带过去，否则 config.json 里配的认证
 			// 会被静默忽略，上游要求认证时白名单程序全部断网且无提示。
@@ -97,7 +105,9 @@ func (e *Engine) Start() error {
 	e.tproxy = tp
 	e.interceptor = i
 	go tp.Accept()
+	e.wg.Add(1)
 	go func() {
+		defer e.wg.Done()
 		if err := i.Start(); err != nil { log.Printf("[WinDivert] runtime stopped: %v", err) }
 	}()
 
@@ -113,8 +123,8 @@ func (e *Engine) UpdatePerformance(p config.PerformanceConfig) {
 	if e.tproxy != nil { e.tproxy.UpdatePerformance(p) }
 }
 
-func (e *Engine) UpdateUpstream(pt, addr string, port int, save string) {
-	newAddr := fmt.Sprintf("%s:%d", addr, port)
+func (e *Engine) UpdateUpstream(pt, addr string, port int, save string) error {
+	newAddr := net.JoinHostPort(addr, strconv.Itoa(port))
 	// 设置页只提交 type/address/port，所以这里只覆写这三项、保留原有凭据，
 	// 再把保留下来的凭据回灌给 TProxy——否则热更新会把认证清掉。
 	user, pass := "", ""
@@ -132,7 +142,10 @@ func (e *Engine) UpdateUpstream(pt, addr string, port int, save string) {
 	e.cfgMu.Unlock()
 	if e.tproxy != nil { e.tproxy.UpdateUpstream(pt, newAddr, user, pass) }
 	if e.interceptor != nil { e.interceptor.SetProxyAddr(proxyFilterIP(addr), uint16(port)) }
-	if save != "" { _ = e.SaveConfig(save) }
+	if save != "" {
+		return e.SaveConfig(save)
+	}
+	return nil
 }
 
 // normalizeWhitelist 清洗白名单：去空白、转小写、去重（保持首次出现的顺序）。
@@ -159,20 +172,23 @@ func normalizeWhitelist(list []string) []string {
 //
 // 放锁之后才 SetWhitelist / SaveConfig：SaveConfig 会再取 cfgMu 的读锁，
 // 持锁调用会自锁死。
-func (e *Engine) mutateWhitelist(save string, fn func(cur []string) []string) []string {
+func (e *Engine) mutateWhitelist(save string, fn func(cur []string) []string) ([]string, error) {
 	e.cfgMu.Lock()
 	clean := fn(append([]string(nil), e.cfg.ProcessWhitelist...))
 	e.cfg.ProcessWhitelist = clean
 	e.cfgMu.Unlock()
 	if e.interceptor != nil { e.interceptor.SetWhitelist(clean) }
-	if save != "" { _ = e.SaveConfig(save) }
-	return append([]string(nil), clean...)
+	var err error
+	if save != "" {
+		err = e.SaveConfig(save)
+	}
+	return append([]string(nil), clean...), err
 }
 
 // AddProcess 把一个进程加入白名单（大小写不敏感去重），返回更新后的完整列表。
-func (e *Engine) AddProcess(name, save string) []string {
+func (e *Engine) AddProcess(name, save string) ([]string, error) {
 	name = strings.TrimSpace(name)
-	if name == "" { return e.GetProcessWhitelist() }
+	if name == "" { return e.GetProcessWhitelist(), nil }
 	return e.mutateWhitelist(save, func(cur []string) []string {
 		for _, p := range cur {
 			if strings.EqualFold(p, name) { return normalizeWhitelist(cur) }
@@ -183,7 +199,7 @@ func (e *Engine) AddProcess(name, save string) []string {
 
 // RemoveProcess 按大小写不敏感匹配移除一个进程，返回更新后的完整列表。
 // 名字为空或不存在时列表不变，仍按清洗后的结果返回。
-func (e *Engine) RemoveProcess(name, save string) []string {
+func (e *Engine) RemoveProcess(name, save string) ([]string, error) {
 	name = strings.TrimSpace(name)
 	return e.mutateWhitelist(save, func(cur []string) []string {
 		if name == "" { return normalizeWhitelist(cur) }
@@ -232,6 +248,7 @@ func (e *Engine) SaveConfig(path string) error {
 
 func (e *Engine) Stop() {
 	if e.interceptor != nil { e.interceptor.Close() }
+	e.wg.Wait()
 	if e.tproxy != nil { _ = e.tproxy.Close() }
 	if e.tracker != nil { e.tracker.Close() }
 	CleanUpOnShutdown()

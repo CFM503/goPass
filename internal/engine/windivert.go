@@ -41,17 +41,26 @@ func stopAndRemoveService(name string) {
 	for i:=0;i<30;i++ { checkSvc,e:=windows.OpenService(scm,syscall.StringToUTF16Ptr(name),windows.SERVICE_QUERY_STATUS); if e!=nil{break}; windows.CloseServiceHandle(checkSvc); time.Sleep(500*time.Millisecond) }
 }
 func stopAndRemoveWinDivertDriver(){stopAndRemoveService("WinDivert");stopAndRemoveService("WinDivert14")}
-func CleanUpDependencies(){stopAndRemoveWinDivertDriver();cwd,err:=os.Getwd();if err!=nil{cwd="."};for _,n:=range []string{"WinDivert.dll","WinDivert64.sys","WinDivert64.sys.tmp"}{_=os.Remove(filepath.Join(cwd,n))}}
-func CleanUpOnShutdown(){if wdDLL!=nil&&wdDLL.dll!=nil{_=wdDLL.dll.Release();wdDLL=nil};stopAndRemoveWinDivertDriver();if cwd,err:=os.Getwd();err==nil{for _,n:=range []string{"WinDivert.dll","WinDivert64.sys","WinDivert64.sys.tmp"}{_=os.Remove(filepath.Join(cwd,n))}}}
+func winDivertDir() string {
+	if exe, err := os.Executable(); err == nil && exe != "" {
+		return filepath.Dir(exe)
+	}
+	if cwd, err := os.Getwd(); err == nil && cwd != "" {
+		return cwd
+	}
+	return "."
+}
+func CleanUpDependencies(){stopAndRemoveWinDivertDriver();dir:=winDivertDir();for _,n:=range []string{"WinDivert.dll","WinDivert64.sys","WinDivert64.sys.tmp"}{_=os.Remove(filepath.Join(dir,n))}}
+func CleanUpOnShutdown(){if wdDLL!=nil&&wdDLL.dll!=nil{_=wdDLL.dll.Release();wdDLL=nil};stopAndRemoveWinDivertDriver();dir:=winDivertDir();for _,n:=range []string{"WinDivert.dll","WinDivert64.sys","WinDivert64.sys.tmp"}{_=os.Remove(filepath.Join(dir,n))}}
 func fileContentMatch(path string,want []byte)bool{data,err:=os.ReadFile(path);if err!=nil{return false};if len(data)!=len(want){return false};for i:=range data{if data[i]!=want[i]{return false}};return true}
 func extractSysFile(path string,data []byte)error{if err:=os.WriteFile(path,data,0755);err==nil{return nil};tmp:=path+".tmp";if err:=os.WriteFile(tmp,data,0755);err!=nil{return err};k:=syscall.NewLazyDLL("kernel32.dll");m:=k.NewProc("MoveFileExW");s,_:=syscall.UTF16PtrFromString(tmp);d,_:=syscall.UTF16PtrFromString(path);ret,_,err:=m.Call(uintptr(unsafe.Pointer(s)),uintptr(unsafe.Pointer(d)),3);if ret!=0{return nil};_=os.Remove(tmp);return fmt.Errorf("replace SYS failed: %w",err)}
-func loadWinDivert()(*winDivertDLL,error){wdOnce.Do(func(){stopAndRemoveWinDivertDriver();cwd,err:=os.Getwd();if err!=nil{cwd="."};dllPath:=filepath.Join(cwd,"WinDivert.dll");sysPath:=filepath.Join(cwd,"WinDivert64.sys");if !fileContentMatch(dllPath,windivertDLL){if err:=os.WriteFile(dllPath,windivertDLL,0755);err!=nil{wdErr=err;return}};if !fileContentMatch(sysPath,windivertSYS){if err:=extractSysFile(sysPath,windivertSYS);err!=nil&&!fileContentMatch(sysPath,windivertSYS){wdErr=err;return}};dll,err:=windows.LoadDLL(dllPath);if err!=nil{wdErr=err;return};find:=func(n string)*windows.Proc{p,e:=dll.FindProc(n);if e!=nil{wdErr=e;return nil};return p};findOpt:=func(n string)*windows.Proc{p,e:=dll.FindProc(n);if e!=nil{return nil};return p};wdDLL=&winDivertDLL{dll:dll,procOpen:find("WinDivertOpen"),procRecv:find("WinDivertRecv"),procRecvEx:findOpt("WinDivertRecvEx"),procSend:find("WinDivertSend"),procSendEx:findOpt("WinDivertSendEx"),procClose:find("WinDivertClose"),procCalcChecks:find("WinDivertHelperCalcChecksums")}});return wdDLL,wdErr}
-type winDivertHandle struct{handle windows.Handle;dll *winDivertDLL}
+func loadWinDivert()(*winDivertDLL,error){wdOnce.Do(func(){stopAndRemoveWinDivertDriver();dir:=winDivertDir();dllPath:=filepath.Join(dir,"WinDivert.dll");sysPath:=filepath.Join(dir,"WinDivert64.sys");if !fileContentMatch(dllPath,windivertDLL){if err:=os.WriteFile(dllPath,windivertDLL,0755);err!=nil{wdErr=err;return}};if !fileContentMatch(sysPath,windivertSYS){if err:=extractSysFile(sysPath,windivertSYS);err!=nil&&!fileContentMatch(sysPath,windivertSYS){wdErr=err;return}};dll,err:=windows.LoadDLL(dllPath);if err!=nil{wdErr=err;return};find:=func(n string)*windows.Proc{p,e:=dll.FindProc(n);if e!=nil{wdErr=e;return nil};return p};findOpt:=func(n string)*windows.Proc{p,e:=dll.FindProc(n);if e!=nil{return nil};return p};wdDLL=&winDivertDLL{dll:dll,procOpen:find("WinDivertOpen"),procRecv:find("WinDivertRecv"),procRecvEx:findOpt("WinDivertRecvEx"),procSend:find("WinDivertSend"),procSendEx:findOpt("WinDivertSendEx"),procClose:find("WinDivertClose"),procCalcChecks:find("WinDivertHelperCalcChecksums")}});return wdDLL,wdErr}
+type winDivertHandle struct{handle windows.Handle;dll *winDivertDLL;closeOnce sync.Once}
 func wdOpen(filter string,layer,priority int,flags uint64)(*winDivertHandle,error){dll,err:=loadWinDivert();if err!=nil{return nil,err};p,err:=syscall.BytePtrFromString(filter);if err!=nil{return nil,err};ret,_,eno:=dll.procOpen.Call(uintptr(unsafe.Pointer(p)),uintptr(layer),uintptr(priority),uintptr(flags));if ret==uintptr(windows.InvalidHandle){return nil,fmt.Errorf("WinDivertOpen failed: %w",eno)};return &winDivertHandle{handle:windows.Handle(ret),dll:dll},nil}
 func(h *winDivertHandle)Recv(buf []byte)(int,*winDivertAddress,error){if len(buf)==0{return 0,nil,fmt.Errorf("empty receive buffer")};var addr winDivertAddress;var n uint32;ret,_,eno:=h.dll.procRecv.Call(uintptr(h.handle),uintptr(unsafe.Pointer(&buf[0])),uintptr(len(buf)),uintptr(unsafe.Pointer(&n)),uintptr(unsafe.Pointer(&addr)));if ret==0{return 0,nil,fmt.Errorf("WinDivertRecv: %w",eno)};return int(n),&addr,nil}
 func(h *winDivertHandle)Send(pkt []byte,addr *winDivertAddress)error{if len(pkt)==0{return fmt.Errorf("empty packet")};var n uint32;ret,_,eno:=h.dll.procSend.Call(uintptr(h.handle),uintptr(unsafe.Pointer(&pkt[0])),uintptr(len(pkt)),uintptr(unsafe.Pointer(&n)),uintptr(unsafe.Pointer(addr)));if ret==0{return fmt.Errorf("WinDivertSend: %w",eno)};return nil}
 func(h *winDivertHandle)CalcChecksums(pkt []byte,addr *winDivertAddress)error{if len(pkt)==0{return fmt.Errorf("empty packet")};ret,_,eno:=h.dll.procCalcChecks.Call(uintptr(unsafe.Pointer(&pkt[0])),uintptr(len(pkt)),uintptr(unsafe.Pointer(addr)),0);if ret==0{return fmt.Errorf("WinDivertHelperCalcChecksums: %w",eno)};return nil}
-func(h *winDivertHandle)Close(){if h!=nil&&h.handle!=windows.InvalidHandle{_,_,_=h.dll.procClose.Call(uintptr(h.handle));h.handle=windows.InvalidHandle}}
+func(h *winDivertHandle)Close(){if h==nil{return};h.closeOnce.Do(func(){if h.handle!=windows.InvalidHandle{_,_,_=h.dll.procClose.Call(uintptr(h.handle))}})}
 func isProcessElevated()bool{var token windows.Token;if err:=windows.OpenProcessToken(windows.CurrentProcess(),windows.TOKEN_QUERY,&token);err!=nil{return false};defer token.Close();return token.IsElevated()}
 
 // 拦截器运行状态：stopped / running / error（供 /api/status 如实上报）
@@ -61,9 +70,13 @@ const (
 	stateError   = "error"
 )
 
-type Interceptor struct{ handle *winDivertHandle;mu sync.RWMutex;tracker *ConnTracker;proxyIP string;proxyPort uint16;proxy4 [4]byte;proxy4ok bool;tproxyPort uint16;stopCh chan struct{};closeOnce sync.Once;resolver *process.Resolver;whitelist map[string]struct{};policies *flowPolicies;lookupName func(process.Flow) (string, bool);state atomic.Value;stateMsg atomic.Value;lastLookupFailLog time.Time }
+type Interceptor struct{ handle *winDivertHandle;mu sync.RWMutex;tracker *ConnTracker;proxyIP string;proxyPort uint16;proxy4 [4]byte;proxy4ok bool;tproxyPort uint16;stopCh chan struct{};closeOnce sync.Once;loopWG sync.WaitGroup;resolver *process.Resolver;whitelist map[string]struct{};selfPID uint32;selfExe string;policies *flowPolicies;lookupName func(process.Flow) (string, bool);state atomic.Value;stateMsg atomic.Value;lastLookupFailLog time.Time }
 func NewInterceptor(tracker *ConnTracker,proxyIP string,proxyPort,tproxyPort uint16,whitelist []string)*Interceptor{
-	i:=&Interceptor{tracker:tracker,tproxyPort:tproxyPort,stopCh:make(chan struct{}),resolver:process.NewResolver(),whitelist:make(map[string]struct{}),policies:newFlowPolicies(tracker)}
+	selfExe := ""
+	if exe, err := os.Executable(); err == nil && exe != "" {
+		selfExe = strings.ToLower(filepath.Base(exe))
+	}
+	i:=&Interceptor{tracker:tracker,tproxyPort:tproxyPort,stopCh:make(chan struct{}),resolver:process.NewResolver(),whitelist:make(map[string]struct{}),selfPID:uint32(os.Getpid()),selfExe:selfExe,policies:newFlowPolicies(tracker)}
 	// 顺带缓存 proxyIP 的 4 字节形式：热路径每包都要比对目的地址，
 	// net.ParseIP 会产生堆分配，不能留在逐包路径上。
 	i.SetProxyAddr(proxyIP, proxyPort)
@@ -73,6 +86,8 @@ func NewInterceptor(tracker *ConnTracker,proxyIP string,proxyPort,tproxyPort uin
 	i.lookupName = func(f process.Flow) (string, bool) {
 		e, ok := i.resolver.LookupWithRefresh(f)
 		if !ok || e.Name == "" { return "", false }
+		// 自身 PID 直接放行，避免白名单误配自身导致代理死循环。
+		if e.PID == i.selfPID { return "", true }
 		return e.Name, true
 	}
 	return i
@@ -129,12 +144,26 @@ func(i *Interceptor)preflight()error{if !isProcessElevated(){return fmt.Errorf("
 // 批量收/发由 WinDivert 2.x 的 batched I/O 提供，把"每包两次内核上下文切换"
 // 降为"每批各一次"；任何一步异常都只影响当批，状态上报保持原语义。
 func (i *Interceptor) Start() error {
+	select {
+	case <-i.stopCh:
+		i.setState(stateStopped, "")
+		return nil
+	default:
+	}
 	h, err := wdOpen(i.buildFilter(), layerNetwork, priorityDefault, 0)
 	if err != nil {
 		i.setState(stateError, err.Error())
 		return fmt.Errorf("WinDivert 启动失败：%w", err)
 	}
 	i.mu.Lock()
+	select {
+	case <-i.stopCh:
+		i.mu.Unlock()
+		h.Close()
+		i.setState(stateStopped, "")
+		return nil
+	default:
+	}
 	i.handle = h
 	i.mu.Unlock()
 	i.setState(stateRunning, "")
@@ -142,6 +171,7 @@ func (i *Interceptor) Start() error {
 	process.RefreshIPv6TCP()
 	process.RefreshIPv6UDP()
 	log.Println("[WinDivert] unified TCP/QUIC/IPv6 interception ready")
+	i.loopWG.Add(1)
 	go i.refreshLoop()
 
 	recvBuf := make([]byte, recvBufSize)
@@ -237,9 +267,9 @@ func logRateLimited(err error) {
 // refreshLoop 只做后台兜底刷新：1 秒足够 UI 快照用。
 // 新连接识别不到时 LookupWithRefresh 会当场强制刷新，正确性不依赖这个频率；
 // 之前 250ms 全表刷新在空闲时也是纯浪费（P4）。
-func(i *Interceptor)refreshLoop(){ticker:=time.NewTicker(time.Second);defer ticker.Stop();for{select{case<-i.stopCh:return;case<-ticker.C:_=i.resolver.Refresh();process.RefreshIPv6TCP();process.RefreshIPv6UDP()}}}
+func(i *Interceptor)refreshLoop(){defer i.loopWG.Done();ticker:=time.NewTicker(time.Second);defer ticker.Stop();for{select{case<-i.stopCh:return;case<-ticker.C:_=i.resolver.Refresh();process.RefreshIPv6TCP();process.RefreshIPv6UDP()}}}
 func(i *Interceptor)handlePacket(q *sendQueue,pkt []byte,addr *winDivertAddress){if len(pkt)<1{return};version:=pkt[0]>>4;if version==6{i.handleIPv6(q,pkt,addr);return};if version!=4{return};if len(pkt)<20{return};ihl:=int(pkt[0]&0x0f)*4;if ihl<20||len(pkt)<ihl{return};proto:=pkt[9];if proto==17{i.handleIPv4UDP(q,pkt,addr,ihl);return};if proto!=6{return};if len(pkt)<ihl+4{return};i.handleIPv4TCP(q,pkt,addr,ihl)}
-func(i *Interceptor)handleIPv4UDP(q *sendQueue,pkt []byte,addr *winDivertAddress,ihl int){if len(pkt)<ihl+8{i.sendPass(q,pkt,addr);return};srcPort:=binary.BigEndian.Uint16(pkt[ihl:ihl+2]);dstPort:=binary.BigEndian.Uint16(pkt[ihl+2:ihl+4]);if dstPort!=443{i.sendPass(q,pkt,addr);return};if isPrivateOrLocal4(pkt[16],pkt[17],pkt[18],pkt[19]){i.sendPass(q,pkt,addr);return};srcIP:=binary.LittleEndian.Uint32(pkt[12:16]);i.mu.RLock();proxy4,proxy4ok:=i.proxy4,i.proxy4ok;i.mu.RUnlock();if proxy4ok&&proxy4==[4]byte{pkt[16],pkt[17],pkt[18],pkt[19]}{i.sendPass(q,pkt,addr);return};if entry,ok:=i.resolver.LookupUDPWithRefresh(process.UDPFlow{LocalIP:srcIP,LocalPort:srcPort});ok&&i.isWhitelisted(entry.Name){return};i.sendPass(q,pkt,addr)}
+func(i *Interceptor)handleIPv4UDP(q *sendQueue,pkt []byte,addr *winDivertAddress,ihl int){if len(pkt)<ihl+8{i.sendPass(q,pkt,addr);return};srcPort:=binary.BigEndian.Uint16(pkt[ihl:ihl+2]);dstPort:=binary.BigEndian.Uint16(pkt[ihl+2:ihl+4]);if dstPort!=443{i.sendPass(q,pkt,addr);return};if isPrivateOrLocal4(pkt[16],pkt[17],pkt[18],pkt[19]){i.sendPass(q,pkt,addr);return};srcIP:=binary.LittleEndian.Uint32(pkt[12:16]);i.mu.RLock();proxy4,proxy4ok:=i.proxy4,i.proxy4ok;i.mu.RUnlock();if proxy4ok&&proxy4==[4]byte{pkt[16],pkt[17],pkt[18],pkt[19]}{i.sendPass(q,pkt,addr);return};if entry,ok:=i.resolver.LookupUDPWithRefresh(process.UDPFlow{LocalIP:srcIP,LocalPort:srcPort});ok&&entry.PID!=i.selfPID&&i.isWhitelisted(entry.Name){return};i.sendPass(q,pkt,addr)}
 func (i *Interceptor) handleIPv4TCP(q *sendQueue, pkt []byte, addr *winDivertAddress, ihl int) {
 	// 读取 TCP flags（offset 13）需要完整的 20 字节 TCP 头；
 	// handlePacket 只校验过 ihl+4，畸形/截断包在这里必须放行而不是 panic。
@@ -279,30 +309,27 @@ func (i *Interceptor) handleIPv4TCP(q *sendQueue, pkt []byte, addr *winDivertAdd
 	// 保证不会在连接中途改道（串包/RST）。
 	// 唯一例外：policyUndecided 且又出现纯 SYN（握手尚未完成）→ 允许重新评估。
 	if kind, mapped, ok := i.policies.Get(key); ok {
-		retry := kind == policyUndecided && isConnectionStart(flags)
-		if flags&(tcpFIN|tcpRST) != 0 || retry {
-			i.policies.Delete(key)
-		} else {
-			if kind == policyIntercept {
-				// 热路径：映射端口就存在策略里，且 ConnTracker 仍有对应记录时，
-				// 直接改写 —— 跳过 tracker.Set 的写锁与两次字符串分配（每包都要付）。
-				if mapped != 0 && i.tracker.HasMapped(mapped) {
-					i.hijackWithPort(q, pkt, addr, mapped, tproxyPort, ihl)
-					return
-				}
-				// 映射记录已失效（代理侧连接刚结束/端口池变化）：按新连接重新登记，
-				// 并把新端口写回策略，否则之后每个包都会落到这里做全量登记。
-				if m := i.hijackTCP(q, pkt, addr, net.IPv4(pkt[12], pkt[13], pkt[14], pkt[15]), net.IPv4(pkt[16], pkt[17], pkt[18], pkt[19]), srcPort, dstPort, ihl); m != 0 {
-					i.policies.Set(key, policyIntercept, m)
-					return
-				}
-				// 登记失败：hijackTCP 已处置本包，这里只把这条流锁定为直连，
-				// 避免端口池耗尽后每个包都重来一遍全量登记。
-				i.policies.Set(key, policyPass, 0)
+		if kind == policyIntercept {
+			// 已劫持的流（含 FIN/RST 收尾包）：只要 TProxy 映射仍存活就必须继续劫持给 TProxy，
+			// 否则 FIN/RST 漏发到真实公网地址会导致 TProxy 半关闭挂死及后续 ACK 泄露。
+			if mapped != 0 && i.tracker.HasMapped(mapped) {
+				i.hijackWithPort(q, pkt, addr, mapped, tproxyPort, ihl)
 				return
 			}
-			i.sendPass(q, pkt, addr)
-			return
+			// 映射记录已结束（TProxy 已关闭）：清理旧策略。若是端口复用的新 SYN 则按新流重判；
+			// 迟到的非 SYN 尾包直接丢弃，避免给已结束的流分配僵尸映射端口或把载荷漏到公网。
+			i.policies.Delete(key)
+			if !isConnectionStart(flags) {
+				return
+			}
+		} else {
+			retry := kind == policyUndecided && isConnectionStart(flags)
+			if flags&(tcpFIN|tcpRST) != 0 || retry {
+				i.policies.Delete(key)
+			} else {
+				i.sendPass(q, pkt, addr)
+				return
+			}
 		}
 	}
 
@@ -356,7 +383,7 @@ func(i *Interceptor)handleIPv6TCP(q *sendQueue,pkt []byte,addr *winDivertAddress
 	i.sendPass(q,pkt,addr)
 }
 func(i *Interceptor)handleIPv6UDP(q *sendQueue,pkt []byte,addr *winDivertAddress){if len(pkt)<48{i.sendPass(q,pkt,addr);return};dstPort:=binary.BigEndian.Uint16(pkt[42:44]);if dstPort!=443{i.sendPass(q,pkt,addr);return};var dst6 [16]byte;copy(dst6[:],pkt[24:40]);if isPrivateOrLocalV6(dst6[:]){i.sendPass(q,pkt,addr);return};var localIP [16]byte;copy(localIP[:],pkt[8:24]);srcPort:=binary.BigEndian.Uint16(pkt[40:42]);name,ok:=process.LookupIPv6UDP(process.IPv6UDPFlow{LocalIP:localIP,LocalPort:srcPort});if !ok{process.RefreshIPv6UDP();name,ok=process.LookupIPv6UDP(process.IPv6UDPFlow{LocalIP:localIP,LocalPort:srcPort})};if ok&&i.isWhitelisted(name){return};i.sendPass(q,pkt,addr)}
-func(i *Interceptor)isWhitelisted(name string)bool{i.mu.RLock();_,ok:=i.whitelist[strings.ToLower(name)];i.mu.RUnlock();return ok}
+func(i *Interceptor)isWhitelisted(name string)bool{if name==""{return false};if i.selfExe!=""&&strings.EqualFold(name,i.selfExe){return false};i.mu.RLock();_,ok:=i.whitelist[strings.ToLower(name)];i.mu.RUnlock();return ok}
 // loopbackV4 是劫持改写反复要写入的地址；在包路径上构造 net.IP 会产生堆分配。
 var loopbackV4 = net.IPv4(127, 0, 0, 1).To4()
 
@@ -391,7 +418,7 @@ func(i *Interceptor)reverseNAT(q *sendQueue,pkt []byte,addr *winDivertAddress,ih
 
 // calcAndSend 重算校验和后把包排队回注。
 // q 为 nil 表示没有批量队列（单测/降级路径），校验和算完直接同步发送。
-func(i *Interceptor)calcAndSend(q *sendQueue,pkt []byte,addr *winDivertAddress)error{i.mu.RLock();h:=i.handle;i.mu.RUnlock();if h==nil{return fmt.Errorf("WinDivert handle not ready")};if err:=h.CalcChecksums(pkt,addr);err!=nil{return err};if q==nil{return h.Send(pkt,addr)};q.push(pkt,addr);return nil}
+func(i *Interceptor)calcAndSend(q *sendQueue,pkt []byte,addr *winDivertAddress)error{i.mu.RLock();h:=i.handle;i.mu.RUnlock();if h==nil{return fmt.Errorf("WinDivert handle not ready")};if err:=h.CalcChecksums(pkt,addr);err!=nil{return err};if q==nil{return h.Send(pkt,addr)};if q.wouldOverflow(len(pkt)){i.flushQueue(q)};q.push(pkt,addr);return nil}
 
 // sendPass 把包原样排队回注。q 为 nil 时退回同步发送（无驱动句柄则丢弃）。
 func(i *Interceptor)sendPass(q *sendQueue,pkt []byte,addr *winDivertAddress){
@@ -441,4 +468,4 @@ func isPrivateOrLocalV6(ip net.IP)bool{
 	if ip[0]==0xfe&&ip[1]&0xc0==0xc0{return true}     // 已废弃的 site-local fec0::/10
 	return false
 }
-func(i *Interceptor)Close(){i.closeOnce.Do(func(){close(i.stopCh);i.setState(stateStopped,"");if i.policies!=nil{i.policies.Close()};i.mu.Lock();h:=i.handle;i.handle=nil;i.mu.Unlock();if h!=nil{h.Close()}})}
+func(i *Interceptor)Close(){i.closeOnce.Do(func(){close(i.stopCh);i.setState(stateStopped,"");if i.policies!=nil{i.policies.Close()};i.mu.Lock();h:=i.handle;i.handle=nil;i.mu.Unlock();if h!=nil{h.Close()};i.loopWG.Wait()})}

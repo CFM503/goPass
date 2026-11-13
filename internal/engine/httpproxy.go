@@ -37,7 +37,8 @@ func (d *HTTPProxyDialer) Dial(network, addr string) (net.Conn,error) {
 
 	br:=bufio.NewReader(c)
 	resp,err:=http.ReadResponse(br,req); if err!=nil{return fail(fmt.Errorf("read proxy response failed: %w",err))}
-	if resp.StatusCode!=http.StatusOK { io.Copy(io.Discard,resp.Body);resp.Body.Close();return fail(fmt.Errorf("proxy rejected connection: %s",resp.Status)) }
+	defer resp.Body.Close()
+	if resp.StatusCode!=http.StatusOK { io.Copy(io.Discard,resp.Body);return fail(fmt.Errorf("proxy rejected connection: %s",resp.Status)) }
 	_ = c.SetDeadline(time.Time{})
 	if br.Buffered()>0 { return &BufferedConn{Conn:c,br:br},nil }
 	return c,nil
@@ -45,3 +46,9 @@ func (d *HTTPProxyDialer) Dial(network, addr string) (net.Conn,error) {
 
 type BufferedConn struct { net.Conn; br *bufio.Reader }
 func (c *BufferedConn) Read(b []byte)(int,error){ return c.br.Read(b) }
+func (c *BufferedConn) CloseWrite() error {
+	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return nil
+}

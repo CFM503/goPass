@@ -68,7 +68,7 @@ jobs:
           $env:GOOS = "windows"
           $env:GOARCH = "amd64"
           go build -ldflags="-s -w" -o gopass.exe ./cmd/gopass
-          $version = if ($env:GITHUB_REF_NAME -match '^v') { $env:GITHUB_REF_NAME } else { 'v1.9.0' }
+          $version = if ($env:GITHUB_REF_NAME -match '^v') { $env:GITHUB_REF_NAME } else { 'v1.9.1' }
           $versioned = "gopass_" + $version.TrimStart('v') + ".exe"
           Copy-Item gopass.exe $versioned
           Get-Item gopass.exe, $versioned | Select-Object Name, Length
@@ -94,7 +94,7 @@ jobs:
             - Minimal Web UI: status, process whitelist, upstream settings, TProxy Buffer Size
             - Live process panel shows proxy/direct status, PID, connection count and target IP:port
             - TProxy Buffer Size: 32 KB–1 MB, default 64 KB
-            - No GeoIP/GeoSite, DNS relay/Fake-IP, SNI, UDP/QUIC, automatic routing or route probing
+            - No GeoIP/GeoSite, DNS relay/Fake-IP, SNI/QUIC routing rules, automatic routing or route probing
           files: |
             gopass_*.exe
         env:
