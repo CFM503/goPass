@@ -15,7 +15,6 @@ import (
 	"unsafe"
 
 	"github.com/CFM503/goPass/internal/process"
-	"golang.org/x/sys/windows"
 )
 
 const (
@@ -29,16 +28,61 @@ const (
 // 8(Timestamp) + 8(位域字) + 64(union)。批量收包按 sizeof 切分地址数组，
 // 结构体差 4 字节就会把后续地址全部串位，所以 Data 只能是 56 字节。
 type winDivertAddress struct { Timestamp int64; Bits uint32; Reserved2 uint32; IfIdx uint32; SubIfIdx uint32; Data [56]byte }
-type winDivertDLL struct { dll *windows.DLL; procOpen *windows.Proc; procRecv *windows.Proc; procRecvEx *windows.Proc; procSend *windows.Proc; procSendEx *windows.Proc; procClose *windows.Proc; procCalcChecks *windows.Proc }
+type winDivertDLL struct { dll *syscall.DLL; procOpen *syscall.Proc; procRecv *syscall.Proc; procRecvEx *syscall.Proc; procSend *syscall.Proc; procSendEx *syscall.Proc; procClose *syscall.Proc; procCalcChecks *syscall.Proc }
 var ( wdOnce sync.Once; wdDLL *winDivertDLL; wdErr error )
 
+var (
+	advapi32           = syscall.NewLazyDLL("advapi32.dll")
+	procOpenSCManager  = advapi32.NewProc("OpenSCManagerW")
+	procOpenService    = advapi32.NewProc("OpenServiceW")
+	procControlService = advapi32.NewProc("ControlService")
+	procQuerySvcStatus = advapi32.NewProc("QueryServiceStatus")
+	procDeleteService  = advapi32.NewProc("DeleteService")
+	procCloseSvcHandle = advapi32.NewProc("CloseServiceHandle")
+)
+
+type serviceStatus struct {
+	ServiceType             uint32
+	CurrentState            uint32
+	ControlsAccepted        uint32
+	Win32ExitCode           uint32
+	ServiceSpecificExitCode uint32
+	CheckPoint              uint32
+	WaitHint                uint32
+}
+
 func stopAndRemoveService(name string) {
-	scm, err := windows.OpenSCManager(nil,nil,windows.SC_MANAGER_CONNECT|windows.SC_MANAGER_CREATE_SERVICE); if err!=nil{return}; defer windows.CloseServiceHandle(scm)
-	svc, err := windows.OpenService(scm,syscall.StringToUTF16Ptr(name),windows.SERVICE_STOP|windows.SERVICE_QUERY_STATUS|windows.DELETE); if err!=nil{return}
-	var status windows.SERVICE_STATUS; _=windows.ControlService(svc,windows.SERVICE_CONTROL_STOP,&status)
-	for i:=0;i<50;i++ { time.Sleep(100*time.Millisecond); if err:=windows.QueryServiceStatus(svc,&status); err!=nil||status.CurrentState==windows.SERVICE_STOPPED{break} }
-	_=windows.DeleteService(svc); windows.CloseServiceHandle(svc)
-	for i:=0;i<30;i++ { checkSvc,e:=windows.OpenService(scm,syscall.StringToUTF16Ptr(name),windows.SERVICE_QUERY_STATUS); if e!=nil{break}; windows.CloseServiceHandle(checkSvc); time.Sleep(500*time.Millisecond) }
+	const (
+		scManagerConnect       = 0x0001
+		scManagerCreateService = 0x0002
+		serviceStop            = 0x0020
+		serviceQueryStatus     = 0x0004
+		serviceDelete          = 0x00010000
+		serviceControlStop     = 0x00000001
+		serviceStopped         = 0x00000001
+	)
+	scm, _, _ := procOpenSCManager.Call(0, 0, scManagerConnect|scManagerCreateService)
+	if scm == 0 { return }
+	defer procCloseSvcHandle.Call(scm)
+	namePtr, err := syscall.UTF16PtrFromString(name)
+	if err != nil { return }
+	svc, _, _ := procOpenService.Call(scm, uintptr(unsafe.Pointer(namePtr)), serviceStop|serviceQueryStatus|serviceDelete)
+	if svc == 0 { return }
+	var status serviceStatus
+	_, _, _ = procControlService.Call(svc, serviceControlStop, uintptr(unsafe.Pointer(&status)))
+	for i := 0; i < 50; i++ {
+		time.Sleep(100 * time.Millisecond)
+		ok, _, _ := procQuerySvcStatus.Call(svc, uintptr(unsafe.Pointer(&status)))
+		if ok == 0 || status.CurrentState == serviceStopped { break }
+	}
+	_, _, _ = procDeleteService.Call(svc)
+	_, _, _ = procCloseSvcHandle.Call(svc)
+	for i := 0; i < 30; i++ {
+		checkSvc, _, _ := procOpenService.Call(scm, uintptr(unsafe.Pointer(namePtr)), serviceQueryStatus)
+		if checkSvc == 0 { break }
+		_, _, _ = procCloseSvcHandle.Call(checkSvc)
+		time.Sleep(500 * time.Millisecond)
+	}
 }
 func stopAndRemoveWinDivertDriver(){stopAndRemoveService("WinDivert");stopAndRemoveService("WinDivert14")}
 func winDivertDir() string {
@@ -54,14 +98,14 @@ func CleanUpDependencies(){stopAndRemoveWinDivertDriver();dir:=winDivertDir();fo
 func CleanUpOnShutdown(){if wdDLL!=nil&&wdDLL.dll!=nil{_=wdDLL.dll.Release();wdDLL=nil};stopAndRemoveWinDivertDriver();dir:=winDivertDir();for _,n:=range []string{"WinDivert.dll","WinDivert64.sys","WinDivert64.sys.tmp"}{_=os.Remove(filepath.Join(dir,n))}}
 func fileContentMatch(path string,want []byte)bool{data,err:=os.ReadFile(path);if err!=nil{return false};if len(data)!=len(want){return false};for i:=range data{if data[i]!=want[i]{return false}};return true}
 func extractSysFile(path string,data []byte)error{if err:=os.WriteFile(path,data,0755);err==nil{return nil};tmp:=path+".tmp";if err:=os.WriteFile(tmp,data,0755);err!=nil{return err};k:=syscall.NewLazyDLL("kernel32.dll");m:=k.NewProc("MoveFileExW");s,_:=syscall.UTF16PtrFromString(tmp);d,_:=syscall.UTF16PtrFromString(path);ret,_,err:=m.Call(uintptr(unsafe.Pointer(s)),uintptr(unsafe.Pointer(d)),3);if ret!=0{return nil};_=os.Remove(tmp);return fmt.Errorf("replace SYS failed: %w",err)}
-func loadWinDivert()(*winDivertDLL,error){wdOnce.Do(func(){stopAndRemoveWinDivertDriver();dir:=winDivertDir();dllPath:=filepath.Join(dir,"WinDivert.dll");sysPath:=filepath.Join(dir,"WinDivert64.sys");if !fileContentMatch(dllPath,windivertDLL){if err:=os.WriteFile(dllPath,windivertDLL,0755);err!=nil{wdErr=err;return}};if !fileContentMatch(sysPath,windivertSYS){if err:=extractSysFile(sysPath,windivertSYS);err!=nil&&!fileContentMatch(sysPath,windivertSYS){wdErr=err;return}};dll,err:=windows.LoadDLL(dllPath);if err!=nil{wdErr=err;return};find:=func(n string)*windows.Proc{p,e:=dll.FindProc(n);if e!=nil{wdErr=e;return nil};return p};findOpt:=func(n string)*windows.Proc{p,e:=dll.FindProc(n);if e!=nil{return nil};return p};wdDLL=&winDivertDLL{dll:dll,procOpen:find("WinDivertOpen"),procRecv:find("WinDivertRecv"),procRecvEx:findOpt("WinDivertRecvEx"),procSend:find("WinDivertSend"),procSendEx:findOpt("WinDivertSendEx"),procClose:find("WinDivertClose"),procCalcChecks:find("WinDivertHelperCalcChecksums")}});return wdDLL,wdErr}
-type winDivertHandle struct{handle windows.Handle;dll *winDivertDLL;closeOnce sync.Once}
-func wdOpen(filter string,layer,priority int,flags uint64)(*winDivertHandle,error){dll,err:=loadWinDivert();if err!=nil{return nil,err};p,err:=syscall.BytePtrFromString(filter);if err!=nil{return nil,err};ret,_,eno:=dll.procOpen.Call(uintptr(unsafe.Pointer(p)),uintptr(layer),uintptr(priority),uintptr(flags));if ret==uintptr(windows.InvalidHandle){return nil,fmt.Errorf("WinDivertOpen failed: %w",eno)};return &winDivertHandle{handle:windows.Handle(ret),dll:dll},nil}
+func loadWinDivert()(*winDivertDLL,error){wdOnce.Do(func(){stopAndRemoveWinDivertDriver();dir:=winDivertDir();dllPath:=filepath.Join(dir,"WinDivert.dll");sysPath:=filepath.Join(dir,"WinDivert64.sys");if !fileContentMatch(dllPath,windivertDLL){if err:=os.WriteFile(dllPath,windivertDLL,0755);err!=nil{wdErr=err;return}};if !fileContentMatch(sysPath,windivertSYS){if err:=extractSysFile(sysPath,windivertSYS);err!=nil&&!fileContentMatch(sysPath,windivertSYS){wdErr=err;return}};dll,err:=syscall.LoadDLL(dllPath);if err!=nil{wdErr=err;return};find:=func(n string)*syscall.Proc{p,e:=dll.FindProc(n);if e!=nil{wdErr=e;return nil};return p};findOpt:=func(n string)*syscall.Proc{p,e:=dll.FindProc(n);if e!=nil{return nil};return p};wdDLL=&winDivertDLL{dll:dll,procOpen:find("WinDivertOpen"),procRecv:find("WinDivertRecv"),procRecvEx:findOpt("WinDivertRecvEx"),procSend:find("WinDivertSend"),procSendEx:findOpt("WinDivertSendEx"),procClose:find("WinDivertClose"),procCalcChecks:find("WinDivertHelperCalcChecksums")}});return wdDLL,wdErr}
+type winDivertHandle struct{handle syscall.Handle;dll *winDivertDLL;closeOnce sync.Once}
+func wdOpen(filter string,layer,priority int,flags uint64)(*winDivertHandle,error){dll,err:=loadWinDivert();if err!=nil{return nil,err};p,err:=syscall.BytePtrFromString(filter);if err!=nil{return nil,err};ret,_,eno:=dll.procOpen.Call(uintptr(unsafe.Pointer(p)),uintptr(layer),uintptr(priority),uintptr(flags));if ret==uintptr(syscall.InvalidHandle){return nil,fmt.Errorf("WinDivertOpen failed: %w",eno)};return &winDivertHandle{handle:syscall.Handle(ret),dll:dll},nil}
 func(h *winDivertHandle)Recv(buf []byte)(int,*winDivertAddress,error){if len(buf)==0{return 0,nil,fmt.Errorf("empty receive buffer")};var addr winDivertAddress;var n uint32;ret,_,eno:=h.dll.procRecv.Call(uintptr(h.handle),uintptr(unsafe.Pointer(&buf[0])),uintptr(len(buf)),uintptr(unsafe.Pointer(&n)),uintptr(unsafe.Pointer(&addr)));if ret==0{return 0,nil,fmt.Errorf("WinDivertRecv: %w",eno)};return int(n),&addr,nil}
 func(h *winDivertHandle)Send(pkt []byte,addr *winDivertAddress)error{if len(pkt)==0{return fmt.Errorf("empty packet")};var n uint32;ret,_,eno:=h.dll.procSend.Call(uintptr(h.handle),uintptr(unsafe.Pointer(&pkt[0])),uintptr(len(pkt)),uintptr(unsafe.Pointer(&n)),uintptr(unsafe.Pointer(addr)));if ret==0{return fmt.Errorf("WinDivertSend: %w",eno)};return nil}
 func(h *winDivertHandle)CalcChecksums(pkt []byte,addr *winDivertAddress)error{if len(pkt)==0{return fmt.Errorf("empty packet")};ret,_,eno:=h.dll.procCalcChecks.Call(uintptr(unsafe.Pointer(&pkt[0])),uintptr(len(pkt)),uintptr(unsafe.Pointer(addr)),0);if ret==0{return fmt.Errorf("WinDivertHelperCalcChecksums: %w",eno)};return nil}
-func(h *winDivertHandle)Close(){if h==nil{return};h.closeOnce.Do(func(){if h.handle!=windows.InvalidHandle{_,_,_=h.dll.procClose.Call(uintptr(h.handle))}})}
-func isProcessElevated()bool{var token windows.Token;if err:=windows.OpenProcessToken(windows.CurrentProcess(),windows.TOKEN_QUERY,&token);err!=nil{return false};defer token.Close();return token.IsElevated()}
+func(h *winDivertHandle)Close(){if h==nil{return};h.closeOnce.Do(func(){if h.handle!=syscall.InvalidHandle{_,_,_=h.dll.procClose.Call(uintptr(h.handle))}})}
+func isProcessElevated()bool{p,err:=syscall.GetCurrentProcess();if err!=nil{return false};var token syscall.Token;if err:=syscall.OpenProcessToken(p,syscall.TOKEN_QUERY,&token);err!=nil{return false};defer token.Close();var elev struct{TokenIsElevated uint32};var retLen uint32;const tokenElevation=20;if err:=syscall.GetTokenInformation(token,tokenElevation,(*byte)(unsafe.Pointer(&elev)),uint32(unsafe.Sizeof(elev)),&retLen);err!=nil{return false};return elev.TokenIsElevated!=0}
 
 // 拦截器运行状态：stopped / running / error（供 /api/status 如实上报）
 const (

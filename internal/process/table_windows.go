@@ -4,9 +4,8 @@ package process
 
 import (
 	"fmt"
+	"syscall"
 	"unsafe"
-
-	"golang.org/x/sys/windows"
 )
 
 // errorInsufficientBuffer 是 ERROR_INSUFFICIENT_BUFFER：两段式查询的第二步在表
@@ -26,7 +25,7 @@ const maxTableAttempts = 4
 //
 // 探测阶段唯一预期的非零返回就是 122（缓冲区太小）；出现别的错误码时 size 没有
 // 被写入、不可信，直接失败而不是拿它去分配。
-func queryWinTable(proc *windows.LazyProc, bOrder, ulAf, tableClass, reserved uintptr) ([]byte, error) {
+func queryWinTable(proc *syscall.LazyProc, bOrder, ulAf, tableClass, reserved uintptr) ([]byte, error) {
 	size := uint32(0)
 	ret, _, _ := proc.Call(0, uintptr(unsafe.Pointer(&size)), bOrder, ulAf, tableClass, reserved)
 	if ret != 0 && (ret != errorInsufficientBuffer || size == 0) {

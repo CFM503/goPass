@@ -3,8 +3,8 @@ package singleton
 import (
 	"errors"
 	"sync"
-
-	"golang.org/x/sys/windows"
+	"syscall"
+	"unsafe"
 )
 
 // ErrAlreadyRunning 表示本机已经有另一个 GoPass 实例在运行，或者本进程
@@ -18,9 +18,14 @@ var ErrAlreadyRunning = errors.New("GoPass 已在运行")
 // 导致已建立的 NAT 连接中断。因此必须保证单实例。
 const mutexName = "Global\\GoPass_SingleInstance_v1"
 
+const errorAlreadyExists = syscall.Errno(183)
+
 var (
+	kernel32        = syscall.NewLazyDLL("kernel32.dll")
+	procCreateMutex = kernel32.NewProc("CreateMutexW")
+
 	mu     sync.Mutex
-	handle windows.Handle
+	handle syscall.Handle
 )
 
 // classifyCreateMutexErr 归类 CreateMutex 的失败。
@@ -33,7 +38,7 @@ func classifyCreateMutexErr(err error) error {
 	if err == nil {
 		return nil
 	}
-	if err == windows.ERROR_ALREADY_EXISTS || err == windows.ERROR_ACCESS_DENIED {
+	if err == errorAlreadyExists || err == syscall.ERROR_ACCESS_DENIED {
 		return ErrAlreadyRunning
 	}
 	return err
@@ -42,15 +47,22 @@ func classifyCreateMutexErr(err error) error {
 // acquire 执行一次 CreateMutexW。判定"已存在"的依据是 ERROR_ALREADY_EXISTS
 // （与互斥量所有权无关），因此同进程重复调用也能稳定检测，不依赖线程语义。
 // 成功时返回的句柄由调用方持有：只要句柄不关，命名对象就一直存在。
-func acquire() (windows.Handle, error) {
-	name, err := windows.UTF16PtrFromString(mutexName)
+func acquire() (syscall.Handle, error) {
+	name, err := syscall.UTF16PtrFromString(mutexName)
 	if err != nil {
 		return 0, err
 	}
-	h, err := windows.CreateMutex(nil, false, name)
-	if classified := classifyCreateMutexErr(err); classified != nil {
+	r, _, callErr := procCreateMutex.Call(0, 0, uintptr(unsafe.Pointer(name)))
+	h := syscall.Handle(r)
+	var errOut error
+	if errno, ok := callErr.(syscall.Errno); ok && errno != 0 {
+		errOut = errno
+	} else if h == 0 {
+		errOut = callErr
+	}
+	if classified := classifyCreateMutexErr(errOut); classified != nil {
 		if h != 0 {
-			_ = windows.CloseHandle(h)
+			_ = syscall.CloseHandle(h)
 		}
 		return 0, classified
 	}

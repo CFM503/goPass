@@ -2,9 +2,8 @@ package singleton
 
 import (
 	"errors"
+	"syscall"
 	"testing"
-
-	"golang.org/x/sys/windows"
 )
 
 func TestAcquireDetectsSecondInstance(t *testing.T) {
@@ -15,7 +14,7 @@ func TestAcquireDetectsSecondInstance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first acquire: %v", err)
 	}
-	defer windows.CloseHandle(h)
+	defer syscall.CloseHandle(h)
 
 	// 对象仍存在（句柄未关）→ 第二次必须报"已在运行"
 	if _, err := acquire(); !errors.Is(err, ErrAlreadyRunning) {
@@ -23,11 +22,11 @@ func TestAcquireDetectsSecondInstance(t *testing.T) {
 	}
 
 	// 句柄关闭后对象消失，可以再次创建（确保没有残留影响其它测试）
-	_ = windows.CloseHandle(h)
+	_ = syscall.CloseHandle(h)
 	if h2, err := acquire(); err != nil {
 		t.Fatalf("acquire after release: %v", err)
 	} else {
-		defer windows.CloseHandle(h2)
+		defer syscall.CloseHandle(h2)
 	}
 }
 
@@ -47,15 +46,16 @@ func TestAcquireIsIdempotent(t *testing.T) {
 // 把它当成可恢复的普通错误，会让 main 继续启动并随即停掉 WinDivert 服务，
 // 打断第一个实例的连接。这里不碰真实 mutex，因此不依赖本机是否已运行 GoPass。
 func TestCreateMutexErrorsFailClosed(t *testing.T) {
+	const errorInvalidHandle = syscall.Errno(6)
 	cases := []struct {
 		name string
 		err  error
 		want error
 	}{
-		{"already exists", windows.ERROR_ALREADY_EXISTS, ErrAlreadyRunning},
-		{"access denied", windows.ERROR_ACCESS_DENIED, ErrAlreadyRunning},
+		{"already exists", errorAlreadyExists, ErrAlreadyRunning},
+		{"access denied", syscall.ERROR_ACCESS_DENIED, ErrAlreadyRunning},
 		{"nil passes through", nil, nil},
-		{"other error passes through", windows.ERROR_INVALID_HANDLE, windows.ERROR_INVALID_HANDLE},
+		{"other error passes through", errorInvalidHandle, errorInvalidHandle},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

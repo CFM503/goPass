@@ -10,8 +10,6 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
-
-	"golang.org/x/sys/windows"
 )
 
 type Flow struct {
@@ -53,10 +51,10 @@ type Resolver struct {
 }
 
 var (
-	iphlpapi            = windows.NewLazySystemDLL("iphlpapi.dll")
+	iphlpapi            = syscall.NewLazyDLL("iphlpapi.dll")
 	getExtendedTCPTable = iphlpapi.NewProc("GetExtendedTcpTable")
 	getExtendedUDPTable = iphlpapi.NewProc("GetExtendedUdpTable")
-	kernel32            = windows.NewLazySystemDLL("kernel32.dll")
+	kernel32            = syscall.NewLazyDLL("kernel32.dll")
 	openProcess         = kernel32.NewProc("OpenProcess")
 	closeHandle         = kernel32.NewProc("CloseHandle")
 	queryProcessName    = kernel32.NewProc("QueryFullProcessImageNameW")
@@ -279,9 +277,9 @@ func processName(pid uint32) string {
 	if ret == 0 {
 		return ""
 	}
-	h := windows.Handle(ret)
+	h := syscall.Handle(ret)
 	defer closeHandle.Call(ret)
-	buf, n, ok := queryUTF16WithRetry(windows.MAX_PATH, func(b []uint16, need *uint32) (bool, error) {
+	buf, n, ok := queryUTF16WithRetry(syscall.MAX_PATH, func(b []uint16, need *uint32) (bool, error) {
 		r, _, err := queryProcessName.Call(uintptr(h), 0, uintptr(unsafe.Pointer(&b[0])), uintptr(unsafe.Pointer(need)))
 		return r != 0, err
 	})

@@ -12,12 +12,11 @@ import (
 	"time"
 
 	"github.com/CFM503/goPass/internal/version"
-	"golang.org/x/net/proxy"
 )
 
-type HTTPProxyDialer struct { proxyAddr, username, password string; forward proxy.Dialer }
+type HTTPProxyDialer struct { proxyAddr, username, password string; forward Dialer }
 
-func NewHTTPProxy(addr, username, password string, forward proxy.Dialer) (proxy.Dialer, error) {
+func NewHTTPProxy(addr, username, password string, forward Dialer) (Dialer, error) {
 	if !strings.Contains(addr, ":") { addr += ":80" }
 	return &HTTPProxyDialer{proxyAddr:addr,username:username,password:password,forward:forward},nil
 }

@@ -1,5 +1,12 @@
 # GoPass Changelog
 
+## v1.9.2
+
+- **彻底移除第三方 Go 包依赖（纯标准库实现）**：
+  - 新增内部标准库 SOCKS5 客户端（[internal/engine/socks5.go](internal/engine/socks5.go)，支持 RFC 1928 / RFC 1929 用户名密码认证及 IPv4/IPv6/域名目标），移除 `golang.org/x/net`。
+  - 将 `internal/singleton`、`internal/process` 与 `internal/engine/windivert.go` 中的 Windows API 与服务/Token 调用全部迁移至 Go 标准库 `syscall`，移除 `golang.org/x/sys`。
+  - 删除 `vendor/` 目录并整理 `go.mod` / `go.sum`，当前 Go 源码层实现零外部依赖（内核层仅保留已签名的内嵌 WinDivert 驱动）。
+
 ## v1.9.1
 
 - **修复已劫持 TCP 连接的 `FIN`/`RST` 泄露**：`handleIPv4TCP` 对 `ConnTracker` 映射仍存活的已劫持流不再在收到 `FIN`/`RST` 时删策略并直接 `sendPass` 漏向公网，而是继续劫持交给 TProxy 完成正常半关闭/复位；映射失效后仅对端口复用的新 `SYN` 重判，迟到非 `SYN` 尾包直接丢弃而不分配僵尸端口。
